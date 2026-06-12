@@ -5,6 +5,7 @@ require "relay_daemon/app"
 require "relay_daemon/config"
 require "relay_daemon/db"
 require "relay_daemon/event_bus"
+require "relay_daemon/pairing_service"
 require "relay_daemon/repo_store"
 require "relay_daemon/task_store"
 require "relay_daemon/ws_handler"
@@ -80,43 +81,60 @@ end
 RSpec.describe RelayDaemon::WsHandler do
   let(:bus) { RelayDaemon::EventBus.new }
 
-  it "forwards bus events as JSON frames when the token matches" do
-    ws = FakeWs.new
-    described_class.attach(ws, token: "secret", expected_token: "secret", bus: bus)
-    bus.publish(type: "task.started", task_id: "t1")
+  describe ".attach" do
+    it "forwards bus events as JSON frames when authorized" do
+      ws = FakeWs.new
+      described_class.attach(ws, authorized: true, bus: bus)
+      bus.publish(type: "task.started", task_id: "t1")
 
-    expect(ws.sent.length).to eq(1)
-    expect(JSON.parse(ws.sent.first)).to eq(
-      { "type" => "task.started", "taskId" => "t1", "payload" => {} }
-    )
+      expect(ws.sent.length).to eq(1)
+      expect(JSON.parse(ws.sent.first)).to eq(
+        { "type" => "task.started", "taskId" => "t1", "payload" => {} }
+      )
+    end
+
+    it "unsubscribes when the socket closes" do
+      ws = FakeWs.new
+      described_class.attach(ws, authorized: true, bus: bus)
+      ws.close
+      bus.publish(type: "task.started")
+      expect(ws.sent).to be_empty
+    end
+
+    it "closes with 4401 when not authorized" do
+      ws = FakeWs.new
+      described_class.attach(ws, authorized: false, bus: bus)
+      expect(ws.close_code).to eq(4401)
+      bus.publish(type: "task.started")
+      expect(ws.sent).to be_empty
+    end
   end
 
-  it "unsubscribes when the socket closes" do
-    ws = FakeWs.new
-    described_class.attach(ws, token: "secret", expected_token: "secret", bus: bus)
-    ws.close
-    bus.publish(type: "task.started")
-    expect(ws.sent).to be_empty
-  end
+  describe ".token_authorized?" do
+    it "accepts the static daemon token" do
+      expect(described_class.token_authorized?("secret", static_token: "secret", pairing: nil)).to be true
+    end
 
-  it "closes with 4401 when the token does not match" do
-    ws = FakeWs.new
-    described_class.attach(ws, token: "wrong", expected_token: "secret", bus: bus)
-    expect(ws.close_code).to eq(4401)
-    bus.publish(type: "task.started")
-    expect(ws.sent).to be_empty
-  end
+    it "rejects a wrong token with no pairing service" do
+      expect(described_class.token_authorized?("wrong", static_token: "secret", pairing: nil)).to be false
+    end
 
-  it "closes with 4401 when the token is missing" do
-    ws = FakeWs.new
-    described_class.attach(ws, token: nil, expected_token: "secret", bus: bus)
-    expect(ws.close_code).to eq(4401)
-  end
+    it "rejects when no static token and no pairing service" do
+      expect(described_class.token_authorized?("anything", static_token: nil, pairing: nil)).to be false
+    end
 
-  it "closes with 4401 when no daemon token is configured" do
-    ws = FakeWs.new
-    described_class.attach(ws, token: "anything", expected_token: nil, bus: bus)
-    expect(ws.close_code).to eq(4401)
+    it "rejects when the static token is empty" do
+      expect(described_class.token_authorized?("", static_token: "", pairing: nil)).to be false
+    end
+
+    it "accepts a valid paired token" do
+      db = RelayDaemon::Db.new(File.join(Dir.mktmpdir, "ws.sqlite3"))
+      service = RelayDaemon::PairingService.new(db)
+      token = service.claim(service.start_pairing)
+      expect(described_class.token_authorized?(token, static_token: nil, pairing: service)).to be true
+      expect(described_class.token_authorized?("bad", static_token: nil, pairing: service)).to be false
+      db.connection.close
+    end
   end
 end
 

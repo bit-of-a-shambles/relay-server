@@ -40,25 +40,27 @@ if __FILE__ == $PROGRAM_NAME
           "(loopback, RFC1918, or Tailscale 100.64/10 required; pass --unsafe to override)"
   end
 
-  router_dir = File.expand_path("../../router", __dir__)
-  supervisor = RelayDaemon::RouterSupervisor.new(
-    ["npm", "run", "start"],
-    env: ENV.select { |k, _| k.start_with?("RELAY_", "OPENROUTER_") }
-             .transform_keys { |k| k.to_s },
-    backoff: [1, 2, 4, 8]
-  )
+  supervisor = nil
+  if ENV.fetch("RELAY_SUPERVISE_ROUTER", "1") != "0"
+    router_dir = File.expand_path("../../router", __dir__)
+    supervisor = RelayDaemon::RouterSupervisor.new(
+      ["npm", "run", "start"],
+      env: ENV.select { |k, _| k.start_with?("RELAY_", "OPENROUTER_") }
+               .transform_keys { |k| k.to_s },
+      backoff: [1, 2, 4, 8]
+    )
+    supervisor.start
+    warn "daemon: router supervisor started (cwd: #{router_dir})"
+  end
 
   stop = lambda do
     warn "daemon: shutting down"
-    supervisor.stop
+    supervisor&.stop
     exit 0
   end
 
   trap("INT",  &stop)
   trap("TERM", &stop)
-
-  supervisor.start
-  warn "daemon: router supervisor started (cwd: #{router_dir})"
 
   require "puma/cli"
   cli = Puma::CLI.new(
