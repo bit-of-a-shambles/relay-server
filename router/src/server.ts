@@ -60,7 +60,11 @@ export function defaultOptionsFromEnv(): RouterServerOptions {
     openRouterBaseUrl: process.env.OPENROUTER_BASE_URL ?? "https://openrouter.ai/api/v1",
     openRouterModel: process.env.OPENROUTER_MODEL ?? "moonshotai/kimi-k2",
     routingConfigLoader: createRoutingConfigLoader(process.env.RELAY_ROUTING_CONFIG),
-    callLogSink: createCallLogSink(process.env.RELAY_LLM_CALL_LOG),
+    callLogSink: createCallLogSink({
+      jsonlPath: process.env.RELAY_LLM_CALL_LOG,
+      httpUrl: process.env.RELAY_LLM_CALL_SINK_URL,
+      httpToken: process.env.RELAY_LLM_CALL_SINK_TOKEN
+    }),
     referer: process.env.OPENROUTER_HTTP_REFERER ?? "relay.local",
     title: process.env.OPENROUTER_APP_TITLE ?? "Relay"
   };
