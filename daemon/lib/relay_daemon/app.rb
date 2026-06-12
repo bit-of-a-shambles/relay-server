@@ -36,14 +36,15 @@ module RelayDaemon
     set :ws_upgrader, RelayDaemon::FayeUpgrader
     set :pairing_service, nil # RelayDaemon::PairingService; tests and bin/daemon inject
 
+    # Websockets are handled in middleware (before Sinatra) because the
+    # hijacked response must reach the server without post-processing.
+    use RelayDaemon::WsRack, self
+
     # ----- Auth -----
 
     before do
       next if request.path_info == "/healthz"
       next if request.path_info.start_with?("/pair/")
-      # /ws authenticates via its ?token= query param (browsers cannot set
-      # Authorization headers on websocket connections).
-      next if request.path_info == "/ws"
 
       static_token = settings.relay_config.daemon_token
       pairing      = settings.pairing_service
@@ -117,25 +118,6 @@ module RelayDaemon
       halt 401, JSON.generate({ error: "invalid pairing code" }) if token.nil?
 
       JSON.generate({ "authToken" => token })
-    end
-
-    # ----- WebSocket events -----
-
-    get "/ws" do
-      upgrader = settings.ws_upgrader
-      unless upgrader.upgrade?(request.env)
-        content_type :json
-        halt 400, JSON.generate({ error: "websocket upgrade required" })
-      end
-
-      ws = upgrader.upgrade(request.env)
-      RelayDaemon::WsHandler.attach(
-        ws,
-        token: params[:token],
-        expected_token: settings.relay_config.daemon_token,
-        bus: settings.event_bus
-      )
-      ws.rack_response
     end
 
     # ----- Repos -----

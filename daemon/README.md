@@ -85,6 +85,89 @@ with env `ANTHROPIC_BASE_URL=http://127.0.0.1:7778/api` and a dummy
 sets `RELAY_TASK_ID` in the agent's environment. Tests always use a fake
 Ruby script instead (see `spec/support/`).
 
+## Acceptance walkthrough
+
+Proves the full Phase 3 lifecycle with HTTP + websocket clients alone.
+Run from `daemon/`. Uses the fake diff agent (no API key needed); with an
+`OPENROUTER_API_KEY` you can substitute the real Claude Code command from
+the "Agent command" section above.
+
+```bash
+# 0. A sample repo to operate on
+mkdir -p /tmp/relay-accept && cd /tmp/relay-accept
+mkdir sample-repo && git -C sample-repo init
+printf 'line1\n' > sample-repo/existing.txt
+git -C sample-repo add . && git -C sample-repo commit -m initial
+
+# 1. Start the daemon (pairing-only auth; no static token)
+RELAY_DB_PATH=/tmp/relay-accept/relay.sqlite3 \
+RELAY_WORKTREES_DIR=/tmp/relay-accept/worktrees \
+RELAY_AGENT_LOG_DIR=/tmp/relay-accept/tasks \
+RELAY_AGENT_COMMAND='ruby <repo>/daemon/spec/support/fake_diff_agent.rb {prompt}' \
+RELAY_SUPERVISE_ROUTER=0 \
+bin/daemon &
+
+# 2. Pair and claim a token
+bin/daemon pair
+#   URL:  http://127.0.0.1:7777
+#   Code: 9Y6aVuir
+curl -X POST http://127.0.0.1:7777/pair/claim \
+  -H 'Content-Type: application/json' -d '{"pairingCode":"9Y6aVuir"}'
+# {"authToken":"0f69112884b4…d739c2"}
+TOKEN=0f69112884b4…d739c2
+
+# 3. Register the repo
+curl -X POST http://127.0.0.1:7777/repos \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"path":"/tmp/relay-accept/sample-repo"}'
+# {"id":1,"path":"/tmp/relay-accept/sample-repo","name":"sample-repo","testCommand":null}
+
+# 4. Watch events (wscat, or any websocket client)
+wscat -c "ws://127.0.0.1:7777/ws?token=$TOKEN" &
+
+# 5. Create a task
+curl -X POST http://127.0.0.1:7777/tasks \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"repoId":1,"prompt":"Add a new feature file","qualityDial":5}'
+# {"id":"7f816425-…","status":"queued","branch":"relay/7f816425-…",
+#  "baseCommit":"79fc2cc…","baseBranch":"master",…}
+```
+
+The websocket stream shows the lifecycle live (actual transcript from
+this walkthrough, run 2026-06-12):
+
+```
+< {"type":"task.started","taskId":"7f816425-…","payload":{}}
+< {"type":"task.needs_review","taskId":"7f816425-…","payload":{"testsPassed":null}}
+< {"type":"stats.updated","taskId":"7f816425-…","payload":{}}
+```
+
+```bash
+# 6. Inspect the diff
+curl http://127.0.0.1:7777/tasks/7f816425-…/diff -H "Authorization: Bearer $TOKEN"
+# [{"file":"existing.txt","unifiedDiff":"…+appended\n","additions":1,"deletions":0},
+#  {"file":"new.txt","unifiedDiff":"…+created by agent\n","additions":1,"deletions":0}]
+
+# 7. Approve (fast-forward merge into master)
+curl -X POST http://127.0.0.1:7777/tasks/7f816425-…/approve -H "Authorization: Bearer $TOKEN"
+# {"id":"7f816425-…","status":"approved",…}
+# ws: {"type":"task.finished","taskId":"7f816425-…","payload":{"status":"approved"}}
+# ws: {"type":"stats.updated","taskId":"7f816425-…","payload":{}}
+
+# 8. Stats reflect the finished task
+curl "http://127.0.0.1:7777/stats?range=7d" -H "Authorization: Bearer $TOKEN"
+# {"range":"7d","spendUsd":0.0,"frontierCostUsd":0.0,"savedUsd":0.0,
+#  "taskCount":1,"taskSuccessRate":1.0,"perModel":[]}
+
+git -C /tmp/relay-accept/sample-repo log --oneline
+# 13e9303 relay: task 7f816425-… result
+# 79fc2cc initial
+```
+
+`RELAY_SUPERVISE_ROUTER=0` skips the router supervisor (useful when
+testing the daemon alone); the default starts the router under
+supervision.
+
 ## Pairing
 
 ```bash
