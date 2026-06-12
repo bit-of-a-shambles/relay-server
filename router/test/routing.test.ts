@@ -1,9 +1,15 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
-import { JsonlCallLogSink } from "../src/call-log.js";
-import { createCallLogSink } from "../src/call-log.js";
+import { describe, expect, it, vi } from "vitest";
+import {
+  FanOutCallLogSink,
+  HttpCallLogSink,
+  JsonlCallLogSink,
+  MemoryCallLogSink,
+  createCallLogSink,
+  type LlmCallRecord
+} from "../src/call-log.js";
 import {
   chooseRoute,
   createRoutingConfigLoader,
@@ -183,6 +189,129 @@ describe("call log sinks", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("createCallLogSink(options) returns undefined when no sinks configured", () => {
+    expect(createCallLogSink({})).toBeUndefined();
+    expect(createCallLogSink({ jsonlPath: "", httpUrl: "" })).toBeUndefined();
+  });
+
+  it("createCallLogSink(options) returns JsonlCallLogSink for jsonlPath only", () => {
+    const dir = mkdtempSync(join(tmpdir(), "relay-"));
+    try {
+      const sink = createCallLogSink({ jsonlPath: join(dir, "out.jsonl") });
+      expect(sink).toBeInstanceOf(JsonlCallLogSink);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("createCallLogSink(options) returns HttpCallLogSink for httpUrl only", () => {
+    const sink = createCallLogSink({ httpUrl: "http://localhost:7777/internal/llm-calls" });
+    expect(sink).toBeInstanceOf(HttpCallLogSink);
+  });
+
+  it("createCallLogSink(options) returns FanOutCallLogSink for both sinks", () => {
+    const dir = mkdtempSync(join(tmpdir(), "relay-"));
+    try {
+      const sink = createCallLogSink({
+        jsonlPath: join(dir, "out.jsonl"),
+        httpUrl: "http://localhost:7777/internal/llm-calls"
+      });
+      expect(sink).toBeInstanceOf(FanOutCallLogSink);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+const sampleRecord: LlmCallRecord = {
+  requestedModel: "claude-haiku",
+  routedModel: "moonshotai/kimi-k2",
+  tier: 1,
+  promptTokens: 100,
+  completionTokens: 50,
+  costUsd: 0.001,
+  frontierCostUsd: 0.005,
+  latencyMs: 300,
+  escalationReason: null,
+  status: "success",
+  errorMessage: null,
+  createdAt: "2026-06-12T00:00:00.000Z"
+};
+
+describe("HttpCallLogSink", () => {
+  it("POSTs the record as JSON with the bearer token", async () => {
+    const requests: Request[] = [];
+    const mockFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push(new Request(input, init));
+      return new Response(JSON.stringify({ id: 1 }), { status: 201 });
+    });
+
+    const sink = new HttpCallLogSink(
+      "http://127.0.0.1:7777/internal/llm-calls",
+      "my-token",
+      mockFetch as unknown as typeof fetch
+    );
+    await sink.record(sampleRecord);
+
+    expect(requests).toHaveLength(1);
+    const req = requests[0];
+    expect(req.method).toBe("POST");
+    expect(req.headers.get("Authorization")).toBe("Bearer my-token");
+    expect(req.headers.get("Content-Type")).toBe("application/json");
+    const body = JSON.parse(await req.text());
+    expect(body).toMatchObject({ requestedModel: "claude-haiku", status: "success" });
+  });
+
+  it("swallows network errors (Error instance) and logs to console.error", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const failFetch = vi.fn(async () => {
+      throw new Error("ECONNREFUSED");
+    });
+
+    const sink = new HttpCallLogSink(
+      "http://127.0.0.1:7777/internal/llm-calls",
+      "tok",
+      failFetch as unknown as typeof fetch
+    );
+    await expect(sink.record(sampleRecord)).resolves.toBeUndefined();
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("failed to post call record"),
+      expect.stringContaining("ECONNREFUSED")
+    );
+    errorSpy.mockRestore();
+  });
+
+  it("swallows non-Error throws and converts them to string", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const failFetch = vi.fn(async () => {
+      // eslint-disable-next-line @typescript-eslint/only-throw-error
+      throw "string error value";
+    });
+
+    const sink = new HttpCallLogSink(
+      "http://127.0.0.1:7777/internal/llm-calls",
+      "tok",
+      failFetch as unknown as typeof fetch
+    );
+    await expect(sink.record(sampleRecord)).resolves.toBeUndefined();
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("failed to post call record"),
+      "string error value"
+    );
+    errorSpy.mockRestore();
+  });
+});
+
+describe("FanOutCallLogSink", () => {
+  it("delivers the record to every sink", async () => {
+    const a = new MemoryCallLogSink();
+    const b = new MemoryCallLogSink();
+    const fanOut = new FanOutCallLogSink([a, b]);
+    await fanOut.record(sampleRecord);
+    expect(a.records).toHaveLength(1);
+    expect(b.records).toHaveLength(1);
   });
 });
 

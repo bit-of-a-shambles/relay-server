@@ -1,0 +1,69 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+$LOAD_PATH.unshift File.join(__dir__, "..", "lib")
+
+require "json"
+require "relay_daemon/app"
+require "relay_daemon/bind_safety"
+require "relay_daemon/config"
+require "relay_daemon/db"
+require "relay_daemon/pairing_service"
+require "relay_daemon/router_supervisor"
+
+if __FILE__ == $PROGRAM_NAME
+  config = RelayDaemon::Config.from_env
+
+  case ARGV[0]
+  when "pair"
+    # Pairing codes live in the running daemon's memory, so ask it.
+    # QR rendering is skipped to avoid an extra gem; the code is short
+    # enough to type (documented in README).
+    require "net/http"
+    res = Net::HTTP.post(URI("http://127.0.0.1:#{config.port}/pair/start"), "")
+    payload = JSON.parse(res.body)
+    puts "Pair your device with:"
+    puts "  URL:  #{payload.fetch("qrPayload").fetch("url")}"
+    puts "  Code: #{payload.fetch("qrPayload").fetch("pairingCode")}"
+    exit 0
+  when "revoke"
+    prefix = ARGV[1].to_s
+    abort "usage: bin/daemon revoke <token-or-hash-prefix>" if prefix.empty?
+    db = RelayDaemon::Db.new(config.db_path)
+    count = RelayDaemon::PairingService.new(db).revoke(prefix)
+    puts "revoked #{count} token(s)"
+    exit 0
+  end
+
+  unless RelayDaemon::BindSafety.safe?(config.host) || ARGV.include?("--unsafe")
+    abort "daemon: refusing to bind to non-private address #{config.host} " \
+          "(loopback, RFC1918, or Tailscale 100.64/10 required; pass --unsafe to override)"
+  end
+
+  router_dir = File.expand_path("../../router", __dir__)
+  supervisor = RelayDaemon::RouterSupervisor.new(
+    ["npm", "run", "start"],
+    env: ENV.select { |k, _| k.start_with?("RELAY_", "OPENROUTER_") }
+             .transform_keys { |k| k.to_s },
+    backoff: [1, 2, 4, 8]
+  )
+
+  stop = lambda do
+    warn "daemon: shutting down"
+    supervisor.stop
+    exit 0
+  end
+
+  trap("INT",  &stop)
+  trap("TERM", &stop)
+
+  supervisor.start
+  warn "daemon: router supervisor started (cwd: #{router_dir})"
+
+  require "puma/cli"
+  cli = Puma::CLI.new(
+    ["--bind", "tcp://#{config.host}:#{config.port}",
+     File.join(__dir__, "..", "config.ru")]
+  )
+  cli.run
+end
