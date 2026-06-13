@@ -1,0 +1,15 @@
+name: RelayMenuBar
+targets:
+  RelayMenuBar:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - RelayMenuBar
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.relay.menubar
+        SWIFT_VERSION: 5.10
+        INFOPLIST_FILE: RelayMenuBar/Resources/Info.plist
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGNING_REQUIRED: NO
