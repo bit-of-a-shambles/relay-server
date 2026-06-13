@@ -47,7 +47,8 @@ if __FILE__ == $PROGRAM_NAME
       ["npm", "run", "start"],
       env: ENV.select { |k, _| k.start_with?("RELAY_", "OPENROUTER_") }
                .transform_keys { |k| k.to_s },
-      backoff: [1, 2, 4, 8]
+      backoff: [1, 2, 4, 8],
+      cwd: router_dir
     )
     supervisor.start
     warn "daemon: router supervisor started (cwd: #{router_dir})"
@@ -63,9 +64,10 @@ if __FILE__ == $PROGRAM_NAME
   trap("TERM", &stop)
 
   require "puma/cli"
+  bind_args = RelayDaemon::BindSafety.bind_targets(config.host)
+                                     .flat_map { |h| ["--bind", "tcp://#{h}:#{config.port}"] }
   cli = Puma::CLI.new(
-    ["--bind", "tcp://#{config.host}:#{config.port}",
-     File.join(__dir__, "..", "config.ru")]
+    bind_args + [File.join(__dir__, "..", "config.ru")]
   )
   cli.run
 end

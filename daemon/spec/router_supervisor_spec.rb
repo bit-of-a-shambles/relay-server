@@ -48,6 +48,26 @@ RSpec.describe RelayDaemon::RouterSupervisor do
     end
   end
 
+  # ----- Working directory -----
+
+  describe "spawning with a cwd" do
+    it "runs the command in the given working directory" do
+      dir = Dir.mktmpdir
+      out = File.join(dir, "pwd.txt")
+      ready = Queue.new
+      sleeper = ->(_n) { ready.push(:ran) }
+
+      # Writes its own working directory (then exits, so the loop continues).
+      cmd = ["ruby", "-e", "File.write(#{out.inspect}, Dir.pwd)"]
+      sup = described_class.new(cmd, backoff: [1], sleeper: sleeper, cwd: dir)
+      sup.start
+      ready.pop # wait until the command has run at least once
+      sup.stop
+
+      expect(File.read(out)).to eq(File.realpath(dir))
+    end
+  end
+
   # ----- Restart / backoff -----
 
   describe "automatic restart with backoff" do
