@@ -76,11 +76,50 @@ final class DaemonController {
     }
 
     private func repoRootPath() -> String {
-        let current = FileManager.default.currentDirectoryPath
-        if current.hasSuffix("/menubar") {
-            return URL(fileURLWithPath: current).deletingLastPathComponent().path
+        Self.resolveRepoRoot(
+            envRoot: ProcessInfo.processInfo.environment["RELAY_REPO_ROOT"],
+            cwd: FileManager.default.currentDirectoryPath,
+            sourcePath: #filePath,
+            exists: { FileManager.default.fileExists(atPath: $0) }
+        )
+    }
+
+    // Locate the relay repo (the dir containing daemon/bin/daemon) regardless of
+    // how the menu bar app was launched. Order: RELAY_REPO_ROOT override, then
+    // the working directory (terminal launch), then a walk up from the compiled
+    // source path (#filePath points into the checkout the app was built from, so
+    // this resolves even for a Finder double-click where cwd is "/").
+    static func resolveRepoRoot(
+        envRoot: String?,
+        cwd: String,
+        sourcePath: String,
+        exists: (String) -> Bool
+    ) -> String {
+        func hasDaemon(_ root: String) -> Bool { exists(root + "/daemon/bin/daemon") }
+
+        if let envRoot = envRoot?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !envRoot.isEmpty, hasDaemon(envRoot) {
+            return envRoot
         }
-        return current
+
+        let cwdRoot = cwd.hasSuffix("/menubar")
+            ? URL(fileURLWithPath: cwd).deletingLastPathComponent().path
+            : cwd
+        if hasDaemon(cwdRoot) {
+            return cwdRoot
+        }
+
+        var dir = URL(fileURLWithPath: sourcePath).deletingLastPathComponent()
+        for _ in 0..<8 {
+            if hasDaemon(dir.path) {
+                return dir.path
+            }
+            let parent = dir.deletingLastPathComponent()
+            if parent.path == dir.path { break }
+            dir = parent
+        }
+
+        return cwdRoot
     }
 
     static func daemonCommand(repoRootPath: String, host: String) -> String {

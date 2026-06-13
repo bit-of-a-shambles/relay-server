@@ -73,4 +73,46 @@ final class DaemonControllerTests: XCTestCase {
 
         XCTAssertThrowsError(try DaemonController.decodePairingPayload(from: data))
     }
+
+    func testResolveRepoRootPrefersValidEnvOverride() {
+        let root = DaemonController.resolveRepoRoot(
+            envRoot: "/repo",
+            cwd: "/somewhere/menubar",
+            sourcePath: "/build/X/Core/DaemonController.swift",
+            exists: { $0 == "/repo/daemon/bin/daemon" }
+        )
+        XCTAssertEqual(root, "/repo")
+    }
+
+    func testResolveRepoRootUsesCwdParentWhenLaunchedFromMenubarDir() {
+        let root = DaemonController.resolveRepoRoot(
+            envRoot: nil,
+            cwd: "/Users/x/relay/menubar",
+            sourcePath: "/irrelevant/File.swift",
+            exists: { $0 == "/Users/x/relay/daemon/bin/daemon" }
+        )
+        XCTAssertEqual(root, "/Users/x/relay")
+    }
+
+    func testResolveRepoRootWalksUpFromSourcePathWhenCwdUnhelpful() {
+        // Mirrors a Finder double-click: cwd is "/", so resolution must fall back
+        // to the compiled source location.
+        let root = DaemonController.resolveRepoRoot(
+            envRoot: "   ", // blank override is ignored
+            cwd: "/",
+            sourcePath: "/Users/x/relay/menubar/RelayMenuBar/Core/DaemonController.swift",
+            exists: { $0 == "/Users/x/relay/daemon/bin/daemon" }
+        )
+        XCTAssertEqual(root, "/Users/x/relay")
+    }
+
+    func testResolveRepoRootFallsBackToCwdWhenNothingResolves() {
+        let root = DaemonController.resolveRepoRoot(
+            envRoot: nil,
+            cwd: "/nowhere",
+            sourcePath: "/a/b/File.swift",
+            exists: { _ in false }
+        )
+        XCTAssertEqual(root, "/nowhere")
+    }
 }
