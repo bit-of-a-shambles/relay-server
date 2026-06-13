@@ -9,14 +9,27 @@ final class DaemonControllerTests: XCTestCase {
     }
 
     func testDaemonCommandUsesEscapedRepoPathAndExpectedShape() {
-        let command = DaemonController.daemonCommand(repoRootPath: "/Users/test/relay")
+        let command = DaemonController.daemonCommand(
+            repoRootPath: "/Users/test/relay",
+            host: "100.66.254.122"
+        )
 
         XCTAssertTrue(command.contains("cd '/Users/test/relay'/daemon"))
-        XCTAssertTrue(command.contains("tailscale ip -4"))
-        XCTAssertTrue(command.contains("if [ -z \"$HOST\" ]; then HOST=127.0.0.1; fi"))
-        XCTAssertTrue(command.contains("RELAY_DAEMON_HOST=\"$HOST\""))
+        XCTAssertTrue(command.contains("RELAY_DAEMON_HOST='100.66.254.122'"))
         XCTAssertTrue(command.contains("RELAY_DAEMON_PORT=17777"))
         XCTAssertTrue(command.contains("bundle exec rackup -p 17777 config.ru"))
+    }
+
+    func testPreferredBindHostFallsBackToLoopbackWhenEnvMissing() {
+        let host = DaemonController.preferredBindHost()
+        XCTAssertFalse(host.isEmpty)
+    }
+
+    func testPreferredBindHostUsesEnvironmentOverride() {
+        setenv("RELAY_DAEMON_HOST", "192.168.88.13", 1)
+        defer { unsetenv("RELAY_DAEMON_HOST") }
+
+        XCTAssertEqual(DaemonController.preferredBindHost(), "192.168.88.13")
     }
 
     func testPairingStartURLBuildsExpectedEndpoint() {

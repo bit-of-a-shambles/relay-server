@@ -20,7 +20,9 @@ final class DaemonController {
         defer { isStarting = false }
 
         let root = repoRootPath()
-        let command = Self.daemonCommand(repoRootPath: root)
+        let bindHost = Self.preferredBindHost()
+        daemonBaseURL = URL(string: "http://\(bindHost):17777")!
+        let command = Self.daemonCommand(repoRootPath: root, host: bindHost)
 
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/zsh")
@@ -81,9 +83,9 @@ final class DaemonController {
         return current
     }
 
-    static func daemonCommand(repoRootPath: String) -> String {
+    static func daemonCommand(repoRootPath: String, host: String) -> String {
         let escaped = shellEscape(repoRootPath)
-        return "cd \(escaped)/daemon && HOST=\"${RELAY_DAEMON_HOST:-$(tailscale ip -4 2>/dev/null | head -n 1)}\" && if [ -z \"$HOST\" ]; then HOST=127.0.0.1; fi && RELAY_DAEMON_HOST=\"$HOST\" RELAY_DAEMON_PORT=17777 bundle exec rackup -p 17777 config.ru"
+        return "cd \(escaped)/daemon && RELAY_DAEMON_HOST=\(shellEscape(host)) RELAY_DAEMON_PORT=17777 bundle exec rackup -p 17777 config.ru"
     }
 
     static func pairingStartURL(baseURL: URL) -> URL {
@@ -106,6 +108,59 @@ final class DaemonController {
 
     static func shellEscape(_ value: String) -> String {
         return "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    static func preferredBindHost() -> String {
+        let environmentHost = ProcessInfo.processInfo.environment["RELAY_DAEMON_HOST"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let environmentHost, !environmentHost.isEmpty {
+            return environmentHost
+        }
+
+        if let tailscaleHost = firstInterfaceAddress(matchingPrefix: "100.") {
+            return tailscaleHost
+        }
+
+        return "127.0.0.1"
+    }
+
+    private static func firstInterfaceAddress(matchingPrefix prefix: String) -> String? {
+        let process = Process()
+        let pipe = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/sbin/ifconfig")
+        process.arguments = []
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+
+        process.waitUntilExit()
+        guard process.terminationStatus == 0,
+              let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) else {
+            return nil
+        }
+
+        for line in output.split(separator: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("inet ") else {
+                continue
+            }
+
+            let fields = trimmed.split(whereSeparator: { $0 == " " || $0 == "\t" })
+            guard fields.count >= 2 else {
+                continue
+            }
+
+            let ip = String(fields[1])
+            if ip.hasPrefix(prefix) {
+                return ip
+            }
+        }
+
+        return nil
     }
 }
 
