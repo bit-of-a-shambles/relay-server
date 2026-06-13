@@ -40,8 +40,18 @@ RSpec.describe "Pairing API" do
       expect(payload["pairingCode"].length).to be >= 6
     end
 
-    it "rejects non-localhost requests with 403" do
+    it "accepts RFC1918 private requests" do
       post "/pair/start", "", { "REMOTE_ADDR" => "10.0.0.5" }
+      expect(last_response.status).to eq(200)
+    end
+
+    it "accepts Tailscale-range requests" do
+      post "/pair/start", "", { "REMOTE_ADDR" => "100.101.102.103" }
+      expect(last_response.status).to eq(200)
+    end
+
+    it "rejects public requests with 403" do
+      post "/pair/start", "", { "REMOTE_ADDR" => "8.8.8.8" }
       expect(last_response.status).to eq(403)
     end
 
