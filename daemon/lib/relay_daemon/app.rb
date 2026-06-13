@@ -91,7 +91,13 @@ module RelayDaemon
       svc = settings.pairing_service
       halt 503, JSON.generate({ error: "pairing not configured" }) if svc.nil?
 
-      cfg  = settings.relay_config
+      cfg = settings.relay_config
+      if RelayDaemon::BindSafety.loopback?(cfg.host)
+        halt 503, JSON.generate({
+          error: "daemon is bound to loopback only; set RELAY_DAEMON_HOST to a Tailscale or LAN address and restart"
+        })
+      end
+
       code = svc.start_pairing
       JSON.generate({
         "qrPayload" => {

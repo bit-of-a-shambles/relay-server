@@ -20,7 +20,7 @@ RSpec.describe "Pairing API" do
 
   before do
     RelayDaemon::App.set(:relay_config, RelayDaemon::Config.new(
-      daemon_token: nil, host: "127.0.0.1", port: 7777, db_path: db_path
+      daemon_token: nil, host: "10.0.0.1", port: 7777, db_path: db_path
     ))
     RelayDaemon::App.set(:pairing_service, service)
   end
@@ -36,8 +36,17 @@ RSpec.describe "Pairing API" do
       post "/pair/start"
       expect(last_response.status).to eq(200)
       payload = JSON.parse(last_response.body)["qrPayload"]
-      expect(payload["url"]).to eq("http://127.0.0.1:7777")
+      expect(payload["url"]).to eq("http://10.0.0.1:7777")
       expect(payload["pairingCode"].length).to be >= 6
+    end
+
+    it "returns 503 when host is loopback (phone cannot reach loopback URLs)" do
+      RelayDaemon::App.set(:relay_config, RelayDaemon::Config.new(
+        daemon_token: nil, host: "127.0.0.1", port: 7777, db_path: db_path
+      ))
+      post "/pair/start"
+      expect(last_response.status).to eq(503)
+      expect(JSON.parse(last_response.body)["error"]).to include("loopback")
     end
 
     it "accepts RFC1918 private requests" do
@@ -140,7 +149,7 @@ RSpec.describe "Pairing API" do
 
     it "accepts a paired token even when a static token is also set" do
       RelayDaemon::App.set(:relay_config, RelayDaemon::Config.new(
-        daemon_token: "static-secret", host: "127.0.0.1", port: 7777, db_path: db_path
+        daemon_token: "static-secret", host: "10.0.0.1", port: 7777, db_path: db_path
       ))
       post "/pair/start"
       code = JSON.parse(last_response.body)["qrPayload"]["pairingCode"]

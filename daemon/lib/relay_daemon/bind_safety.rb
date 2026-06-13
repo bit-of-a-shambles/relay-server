@@ -21,6 +21,21 @@ module RelayDaemon
       T::Array[IPAddr]
     )
 
+    # True when host is a loopback address (127.x.x.x or ::1).
+    # Loopback is only reachable from the same machine, so a QR pairing URL
+    # containing a loopback host is useless to a remote phone.
+    sig { params(host: String).returns(T::Boolean) }
+    def self.loopback?(host)
+      return true if host == "localhost"
+
+      ip = begin
+        IPAddr.new(host)
+      rescue IPAddr::Error
+        return false
+      end
+      IPAddr.new("127.0.0.0/8").include?(ip) || ip == IPAddr.new("::1")
+    end
+
     # Hosts the daemon should bind so both the configured host (e.g. a
     # Tailscale IP for the phone) and loopback (for local clients such as the
     # router's call-log sink and `bin/daemon pair`) are reachable.
