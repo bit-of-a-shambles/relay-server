@@ -43,7 +43,18 @@ final class DaemonController {
         process = nil
     }
 
-    func fetchPairingCode() async throws -> String {
+    struct PairingPayload {
+        let daemonURL: String
+        let pairingCode: String
+
+        func qrContent() -> String {
+            let encodedURL = daemonURL.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? daemonURL
+            let encodedCode = pairingCode.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? pairingCode
+            return "relay://pair?url=\(encodedURL)&code=\(encodedCode)"
+        }
+    }
+
+    func fetchPairingPayload() async throws -> PairingPayload {
         var request = URLRequest(url: Self.pairingStartURL(baseURL: daemonBaseURL))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -55,7 +66,7 @@ final class DaemonController {
         }
 
         let decoded = try JSONDecoder().decode(PairStartResponse.self, from: data)
-        return decoded.qrPayload.pairingCode
+        return PairingPayload(daemonURL: decoded.qrPayload.url, pairingCode: decoded.qrPayload.pairingCode)
     }
 
     func openLogsFolder() {
