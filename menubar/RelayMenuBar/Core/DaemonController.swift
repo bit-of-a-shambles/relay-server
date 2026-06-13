@@ -21,7 +21,11 @@ final class DaemonController {
 
         let root = repoRootPath()
         let bindHost = Self.preferredBindHost()
-        daemonBaseURL = URL(string: "http://\(bindHost):17777")!
+        // daemonBaseURL stays at http://127.0.0.1:17777 — the menu bar and daemon
+        // are always on the same machine, so loopback is the correct local admin
+        // address. The Tailscale bindHost is only for the daemon's own listening
+        // socket (so the phone can reach it) and appears in the QR payload URL
+        // that the daemon itself computes from RELAY_DAEMON_HOST.
         let command = Self.daemonCommand(repoRootPath: root, host: bindHost)
 
         let p = Process()

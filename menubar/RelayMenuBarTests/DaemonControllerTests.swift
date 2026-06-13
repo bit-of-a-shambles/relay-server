@@ -115,4 +115,17 @@ final class DaemonControllerTests: XCTestCase {
         )
         XCTAssertEqual(root, "/nowhere")
     }
+
+    // Regression: start() previously overwrote daemonBaseURL with the Tailscale
+    // bind host, causing "Connection refused" when the menu bar tried to reach the
+    // daemon via the Tailscale interface instead of loopback.  daemonBaseURL must
+    // always be loopback regardless of RELAY_DAEMON_HOST.
+    func testDaemonBaseURLIsAlwaysLoopback() {
+        setenv("RELAY_DAEMON_HOST", "100.99.88.77", 1)
+        defer { unsetenv("RELAY_DAEMON_HOST") }
+
+        let controller = DaemonController()
+        XCTAssertEqual(controller.daemonBaseURL.absoluteString, "http://127.0.0.1:17777",
+            "daemonBaseURL must stay on loopback; Tailscale IP belongs only in RELAY_DAEMON_HOST for the daemon's bind socket")
+    }
 }
