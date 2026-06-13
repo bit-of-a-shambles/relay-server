@@ -21,6 +21,14 @@ module RelayDaemon
       T::Array[IPAddr]
     )
 
+    # Hosts the daemon should bind so both the configured host (e.g. a
+    # Tailscale IP for the phone) and loopback (for local clients such as the
+    # router's call-log sink and `bin/daemon pair`) are reachable.
+    sig { params(host: String).returns(T::Array[String]) }
+    def self.bind_targets(host)
+      [host, "127.0.0.1"].uniq
+    end
+
     # True when host is loopback, RFC1918 private, or Tailscale CGNAT.
     sig { params(host: String).returns(T::Boolean) }
     def self.safe?(host)

@@ -16,7 +16,8 @@ module RelayDaemon
         env: T::Hash[String, String],
         backoff: T::Array[Integer],
         sleeper: T.proc.params(arg0: Numeric).void,
-        kill_timeout: Numeric
+        kill_timeout: Numeric,
+        cwd: T.nilable(String)
       ).void
     end
     def initialize(
@@ -24,13 +25,15 @@ module RelayDaemon
       env: {},
       backoff: BACKOFF_DEFAULT,
       sleeper: DEFAULT_SLEEPER,
-      kill_timeout: 5
+      kill_timeout: 5,
+      cwd: nil
     )
       @command = command
       @env = env
       @backoff = backoff
       @sleeper = sleeper
       @kill_timeout = kill_timeout
+      @cwd = T.let(cwd, T.nilable(String))
       @mutex = T.let(Mutex.new, Mutex)
       @status = T.let(:stopped, Symbol)
       @pid = T.let(nil, T.nilable(Integer))
@@ -88,7 +91,11 @@ module RelayDaemon
       loop do
         break if @mutex.synchronize { @stopping }
 
-        pid = T.unsafe(Process).spawn(@env, *@command)
+        pid = if @cwd.nil?
+                T.unsafe(Process).spawn(@env, *@command)
+              else
+                T.unsafe(Process).spawn(@env, *@command, chdir: @cwd)
+              end
         @mutex.synchronize { @pid = pid }
         Process.wait2(pid)
         @mutex.synchronize { @pid = nil }
