@@ -188,9 +188,10 @@ curl -X POST http://127.0.0.1:7777/pair/claim \
 # {"authToken":"<64 hex chars>"} — shown exactly once; only its SHA-256 is stored
 ```
 
-Codes are single-use and expire after 5 minutes. `POST /pair/start` is
-localhost-only. Auth accepts either `RELAY_DAEMON_TOKEN` (dev/tests) or any
-unrevoked paired token. Revoke with:
+Codes are single-use and expire after 5 minutes. `POST /pair/start` accepts
+only loopback, RFC1918, or Tailscale CGNAT (100.64/10) source addresses.
+Public-source requests are rejected with `403`. Auth accepts either
+`RELAY_DAEMON_TOKEN` (dev/tests) or any unrevoked paired token. Revoke with:
 
 ```bash
 bin/daemon revoke <full-token-or-hash-prefix>
@@ -198,6 +199,13 @@ bin/daemon revoke <full-token-or-hash-prefix>
 
 `bin/daemon` refuses to bind to anything other than loopback, RFC1918, or
 Tailscale CGNAT (100.64/10) addresses unless `--unsafe` is passed.
+
+For physical iPhone pairing over Tailscale, start the daemon with a
+Tailscale IPv4 so the QR payload URL is reachable from the phone:
+
+```bash
+RELAY_DAEMON_HOST="$(tailscale ip -4 | head -n 1)" RELAY_DAEMON_PORT=17777 bin/daemon
+```
 
 ## WebSocket events
 
