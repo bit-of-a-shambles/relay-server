@@ -1,4 +1,5 @@
 import XCTest
+import Darwin
 @testable import RelayMenuBar
 
 final class DaemonControllerTests: XCTestCase {
@@ -116,10 +117,60 @@ final class DaemonControllerTests: XCTestCase {
         XCTAssertEqual(root, "/nowhere")
     }
 
-    // Regression: start() previously overwrote daemonBaseURL with the Tailscale
-    // bind host, causing "Connection refused" when the menu bar tried to reach the
-    // daemon via the Tailscale interface instead of loopback.  daemonBaseURL must
-    // always be loopback regardless of RELAY_DAEMON_HOST.
+    // Regression: stop() was calling p.terminate() which sends SIGTERM only
+    // to the zsh shell wrapper.  The Ruby/Puma child process (forked by that
+    // shell) inherits the shell's PGID but receives no signal — it orphans,
+    // keeps port 17777, and the next "Start Relay Daemon" click fails with
+    // EADDRINUSE.
+    //
+    // Fix: kill(-shellPID, SIGTERM) sends SIGTERM to the entire process group.
+    // Foundation.Process uses POSIX_SPAWN_SETPGROUP so the spawned shell
+    // becomes a process-group leader (PGID == shell.PID); its forked children
+    // inherit that PGID, so kill(-shellPID, SIGTERM) terminates them all.
+    func testStopKillsEntireProcessGroupNotJustShellWrapper() throws {
+        let pidFile = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("relay_stop_test_\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: pidFile) }
+
+        // Mimic DaemonController.start(): a shell that forks a long-running
+        // child (simulating Puma) and waits for it.
+        let shell = Process()
+        shell.executableURL = URL(fileURLWithPath: "/bin/sh")
+        shell.arguments = ["-c", "sleep 30 & echo $! > '\(pidFile.path)'; wait"]
+        shell.standardOutput = FileHandle.nullDevice
+        shell.standardError = FileHandle.nullDevice
+        try shell.run()
+
+        // Wait up to 1 s for the child to write its PID.
+        var childPID: Int32 = 0
+        for _ in 0..<20 {
+            Thread.sleep(forTimeInterval: 0.05)
+            if let s = try? String(contentsOf: pidFile, encoding: .utf8),
+               let pid = Int32(s.trimmingCharacters(in: .whitespacesAndNewlines)),
+               pid > 0 {
+                childPID = pid; break
+            }
+        }
+        XCTAssertGreaterThan(childPID, 0, "child process should have started and written its PID")
+        XCTAssertEqual(Darwin.kill(childPID, 0), 0, "child should be alive before stop()")
+
+        // This is exactly what the fixed DaemonController.stop() does.
+        // Using shell.terminate() (p.terminate()) here instead would leave
+        // the sleep child alive — proving the regression.
+        Darwin.kill(-shell.processIdentifier, SIGTERM)
+        shell.waitUntilExit()
+
+        // Brief wait for SIGTERM delivery and process cleanup.
+        Thread.sleep(forTimeInterval: 0.1)
+
+        // The child (simulated Puma) must be dead.  kill(pid, 0) returns -1
+        // with errno ESRCH when the process no longer exists.
+        XCTAssertEqual(Darwin.kill(childPID, 0), -1,
+            "child process must be dead; p.terminate() alone would leave it orphaned on port 17777")
+    }
+
+    // Regression: daemonBaseURL must always stay on loopback regardless of
+    // RELAY_DAEMON_HOST (Tailscale IP belongs only in the daemon's bind socket).
     func testDaemonBaseURLIsAlwaysLoopback() {
         setenv("RELAY_DAEMON_HOST", "100.99.88.77", 1)
         defer { unsetenv("RELAY_DAEMON_HOST") }
