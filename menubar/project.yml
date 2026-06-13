@@ -13,3 +13,19 @@ targets:
         INFOPLIST_FILE: RelayMenuBar/Resources/Info.plist
         CODE_SIGNING_ALLOWED: NO
         CODE_SIGNING_REQUIRED: NO
+
+  RelayMenuBarTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - RelayMenuBarTests
+    dependencies:
+      - target: RelayMenuBar
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.relay.menubar.tests
+        SWIFT_VERSION: 5.10
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGNING_REQUIRED: NO

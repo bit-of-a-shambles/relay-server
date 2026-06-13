@@ -20,7 +20,7 @@ final class DaemonController {
         defer { isStarting = false }
 
         let root = repoRootPath()
-        let command = "cd \(shellEscape(root))/daemon && RELAY_DAEMON_HOST=127.0.0.1 RELAY_DAEMON_PORT=17777 bundle exec rackup -p 17777 config.ru"
+        let command = Self.daemonCommand(repoRootPath: root)
 
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/zsh")
@@ -44,7 +44,7 @@ final class DaemonController {
     }
 
     func fetchPairingCode() async throws -> String {
-        var request = URLRequest(url: daemonBaseURL.appendingPathComponent("pair/start"))
+        var request = URLRequest(url: Self.pairingStartURL(baseURL: daemonBaseURL))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
@@ -71,7 +71,16 @@ final class DaemonController {
         return current
     }
 
-    private func shellEscape(_ value: String) -> String {
+    static func daemonCommand(repoRootPath: String) -> String {
+        let escaped = shellEscape(repoRootPath)
+        return "cd \(escaped)/daemon && RELAY_DAEMON_HOST=127.0.0.1 RELAY_DAEMON_PORT=17777 bundle exec rackup -p 17777 config.ru"
+    }
+
+    static func pairingStartURL(baseURL: URL) -> URL {
+        baseURL.appendingPathComponent("pair/start")
+    }
+
+    static func shellEscape(_ value: String) -> String {
         return "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 }
