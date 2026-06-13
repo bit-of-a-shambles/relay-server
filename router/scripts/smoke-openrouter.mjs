@@ -1,7 +1,8 @@
 import "dotenv/config";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { createRelayRouterServer, defaultOptionsFromEnv } from "../dist/server.js";
 
@@ -9,6 +10,10 @@ if (!process.env.OPENROUTER_API_KEY) {
   console.log("Skipping OpenRouter smoke: OPENROUTER_API_KEY is not set.");
   process.exit(0);
 }
+
+// Use a free model for smoke so no paid credits are required.
+const __dirname = dirname(fileURLToPath(import.meta.url));
+process.env.RELAY_ROUTING_CONFIG ??= join(__dirname, "smoke-routing.json");
 
 const options = defaultOptionsFromEnv();
 const server = createRelayRouterServer(options);
@@ -32,7 +37,9 @@ try {
       "--include-partial-messages",
       "--no-session-persistence",
       "--allowedTools",
-      "Read"
+      "Read",
+      "--model",
+      "claude-3-5-haiku-20241022"
     ],
     {
       cwd,

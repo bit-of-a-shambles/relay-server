@@ -1,0 +1,15 @@
+{
+  "tiers": {
+    "0": ["google/gemma-4-31b-it:free", "openai/gpt-oss-20b:free", "nvidia/nemotron-nano-9b-v2:free"],
+    "1": ["google/gemma-4-31b-it:free", "openai/gpt-oss-20b:free", "nvidia/nemotron-nano-9b-v2:free"],
+    "2": ["google/gemma-4-31b-it:free", "openai/gpt-oss-20b:free", "nvidia/nemotron-nano-9b-v2:free"],
+    "3": ["google/gemma-4-31b-it:free", "openai/gpt-oss-20b:free", "nvidia/nemotron-nano-9b-v2:free"]
+  },
+  "rules": [
+    { "when": "default", "tier": 0 }
+  ],
+  "qualityDial": {
+    "default": 0
+  },
+  "frontierModel": "google/gemma-4-31b-it:free"
+}
