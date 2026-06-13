@@ -34,6 +34,12 @@ final class DaemonController {
         isStarting = true
         defer { isStarting = false }
 
+        // Kill any stale daemon occupying port 17777 (e.g. from a manual terminal
+        // start that pre-dates this menu bar session). If we don't do this the new
+        // Puma process fails with EADDRINUSE and the port stays owned by the old,
+        // potentially loopback-only process.
+        Self.killPortOwner(17777)
+
         let root = repoRootPath()
         let bindHost = Self.preferredBindHost()
         // daemonBaseURL stays at http://127.0.0.1:17777 — the menu bar and daemon
@@ -186,6 +192,29 @@ final class DaemonController {
 extension DaemonController {
     private static func isLoopback(_ host: String) -> Bool {
         host == "localhost" || host == "::1" || host == "127.0.0.1" || host.hasPrefix("127.")
+    }
+
+    /// Kill whatever process is listening on `port` via SIGTERM to the process
+    /// group, mirroring the same strategy used in stop().  Silently no-ops if
+    /// the port is free or lsof is unavailable.
+    static func killPortOwner(_ port: Int) {
+        let p = Process()
+        let pipe = Pipe()
+        p.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+        p.arguments = ["-ti", "TCP:\(port)", "-sTCP:LISTEN"]
+        p.standardOutput = pipe
+        p.standardError = FileHandle.nullDevice
+        guard (try? p.run()) != nil else { return }
+        p.waitUntilExit()
+        guard p.terminationStatus == 0 else { return }
+        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        for line in output.split(separator: "\n") {
+            if let pid = Int32(line.trimmingCharacters(in: .whitespaces)) {
+                Darwin.kill(-pid, SIGTERM)
+                // Give the process a moment to exit before Puma tries to bind.
+                Thread.sleep(forTimeInterval: 0.5)
+            }
+        }
     }
 
     static func shellEscape(_ value: String) -> String {
