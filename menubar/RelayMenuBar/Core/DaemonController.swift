@@ -85,7 +85,18 @@ final class DaemonController {
 
     static func daemonCommand(repoRootPath: String, host: String) -> String {
         let escaped = shellEscape(repoRootPath)
-        return "cd \(escaped)/daemon && RELAY_DAEMON_HOST=\(shellEscape(host)) RELAY_DAEMON_PORT=17777 bundle exec rackup -p 17777 config.ru"
+        // Launch via bin/daemon (not rackup): it binds to RELAY_DAEMON_HOST via
+        // Puma --bind (rackup ignores the env var and binds loopback only) and
+        // supervises the router. ANTHROPIC_* are inherited by the spawned agent
+        // so Claude Code's calls route through the local router → OpenRouter.
+        let env = [
+            "RELAY_DAEMON_HOST=\(shellEscape(host))",
+            "RELAY_DAEMON_PORT=17777",
+            "RELAY_AGENT_COMMAND='claude -p {prompt} --permission-mode acceptEdits'",
+            "ANTHROPIC_BASE_URL=http://127.0.0.1:7778/api",
+            "ANTHROPIC_API_KEY=relay-dummy"
+        ].joined(separator: " ")
+        return "cd \(escaped)/daemon && \(env) bundle exec ruby bin/daemon"
     }
 
     static func pairingStartURL(baseURL: URL) -> URL {
