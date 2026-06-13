@@ -284,4 +284,28 @@ final class DaemonControllerTests: XCTestCase {
         XCTAssertEqual(controller.daemonBaseURL.absoluteString, "http://127.0.0.1:17777",
             "daemonBaseURL must stay on loopback; Tailscale IP belongs only in RELAY_DAEMON_HOST for the daemon's bind socket")
     }
+
+    // Regression: if a stale daemon (started manually in the terminal with
+    // RELAY_DAEMON_HOST=127.0.0.1) is listening on port 17777 when the user
+    // clicks "Start Relay Daemon", Puma's bind fails with EADDRINUSE and the
+    // old loopback-only daemon stays in control → 503 "loopback error".
+    // killPortOwner() clears the port before starting a fresh daemon.
+    func testKillPortOwnerTerminatesListeningProcess() throws {
+        let testPort = 19_878   // unlikely to be in use
+
+        let listener = Process()
+        listener.executableURL = URL(fileURLWithPath: "/usr/bin/nc")
+        listener.arguments = ["-l", "\(testPort)"]
+        listener.standardOutput = FileHandle.nullDevice
+        listener.standardError = FileHandle.nullDevice
+        try listener.run()
+
+        Thread.sleep(forTimeInterval: 0.3)
+        XCTAssertTrue(listener.isRunning, "nc should be listening before killPortOwner")
+
+        DaemonController.killPortOwner(testPort)
+
+        Thread.sleep(forTimeInterval: 1.0)
+        XCTAssertFalse(listener.isRunning, "listener must be dead after killPortOwner")
+    }
 }
