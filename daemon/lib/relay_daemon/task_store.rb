@@ -38,6 +38,25 @@ module RelayDaemon
       T.must(find(id))
     end
 
+    sig { returns(T::Array[T::Hash[String, T.untyped]]) }
+    def all
+      @db.connection.execute(
+        "SELECT id, repo_id, prompt, quality_dial, status, branch, base_commit, base_branch,
+                created_at, finished_at, tests_passed, cost_usd, frontier_cost_usd
+         FROM tasks ORDER BY created_at DESC"
+      ).map { |row| row_to_h(row) }
+    end
+
+    sig { params(repo_id: Integer).returns(T::Array[T::Hash[String, T.untyped]]) }
+    def all_for_repo(repo_id)
+      @db.connection.execute(
+        "SELECT id, repo_id, prompt, quality_dial, status, branch, base_commit, base_branch,
+                created_at, finished_at, tests_passed, cost_usd, frontier_cost_usd
+         FROM tasks WHERE repo_id = ? ORDER BY created_at DESC",
+        [repo_id]
+      ).map { |row| row_to_h(row) }
+    end
+
     sig { params(id: String).returns(T.nilable(T::Hash[String, T.untyped])) }
     def find(id)
       row = @db.connection.get_first_row(

@@ -276,6 +276,56 @@ RSpec.describe "Tasks API" do
       expect(last_response.status).to eq(503)
     end
   end
+
+  # ----- GET /tasks -----
+
+  describe "GET /tasks" do
+    before do
+      post_task
+      post "/tasks",
+           { repoId: repo["id"], prompt: "second prompt", qualityDial: 3 }.to_json,
+           { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+    end
+
+    it "returns all tasks for the daemon as an array" do
+      get "/tasks", {}, auth_headers
+      expect(last_response.status).to eq(200)
+      body = JSON.parse(last_response.body)
+      expect(body).to be_an(Array)
+      expect(body.size).to eq(2)
+      expect(body.map { |t| t["prompt"] }).to include("do the thing", "second prompt")
+    end
+
+    it "filters by repoId when ?repoId= is given" do
+      other_dir  = make_git_dir
+      other_repo = repo_store.create(path: other_dir)
+      post "/tasks",
+           { repoId: other_repo["id"], prompt: "other repo task", qualityDial: 1 }.to_json,
+           { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+
+      get "/tasks?repoId=#{repo["id"]}", {}, auth_headers
+      expect(last_response.status).to eq(200)
+      body = JSON.parse(last_response.body)
+      expect(body.all? { |t| t["repoId"] == repo["id"] }).to be true
+      expect(body.none? { |t| t["prompt"] == "other repo task" }).to be true
+    end
+
+    it "returns 422 for a non-numeric repoId" do
+      get "/tasks?repoId=abc", {}, auth_headers
+      expect(last_response.status).to eq(422)
+    end
+
+    it "returns 401 without token" do
+      get "/tasks"
+      expect(last_response.status).to eq(401)
+    end
+
+    it "returns 503 when task_store not configured" do
+      RelayDaemon::App.set(:task_store, nil)
+      get "/tasks", {}, auth_headers
+      expect(last_response.status).to eq(503)
+    end
+  end
 end
 
 RSpec.describe RelayDaemon::TaskStore do
@@ -366,6 +416,38 @@ RSpec.describe RelayDaemon::TaskStore do
       task = store.create(repo_id: repo_id, prompt: "p", quality_dial: 3, branch: "relay/x")
       store.finish(task["id"], status: "needs_review", tests_passed: 0)
       expect(store.find(task["id"])["testsPassed"]).to be false
+    end
+  end
+
+  describe "#all" do
+    it "returns all tasks ordered newest-first" do
+      repo_id2 = RelayDaemon::RepoStore.new(db).create(path: make_git_dir)["id"]
+      t1 = store.create(repo_id: repo_id, prompt: "first",  quality_dial: 1, branch: "relay/a")
+      t2 = store.create(repo_id: repo_id2, prompt: "second", quality_dial: 2, branch: "relay/b")
+      tasks = store.all
+      expect(tasks.map { |t| t["id"] }).to include(t1["id"], t2["id"])
+    end
+
+    it "returns empty array when no tasks" do
+      expect(store.all).to eq([])
+    end
+  end
+
+  describe "#all_for_repo" do
+    it "returns only tasks for the given repo, newest-first" do
+      repo_id2 = RelayDaemon::RepoStore.new(db).create(path: make_git_dir)["id"]
+      t1 = store.create(repo_id: repo_id,  prompt: "mine",  quality_dial: 1, branch: "relay/a")
+      t2 = store.create(repo_id: repo_id2, prompt: "other", quality_dial: 2, branch: "relay/b")
+      t3 = store.create(repo_id: repo_id,  prompt: "also mine", quality_dial: 1, branch: "relay/c")
+
+      tasks = store.all_for_repo(repo_id)
+      expect(tasks.map { |t| t["id"] }).to include(t1["id"], t3["id"])
+      expect(tasks.map { |t| t["id"] }).not_to include(t2["id"])
+      expect(tasks.all? { |t| t["repoId"] == repo_id }).to be true
+    end
+
+    it "returns empty array for a repo with no tasks" do
+      expect(store.all_for_repo(repo_id)).to eq([])
     end
   end
 end
