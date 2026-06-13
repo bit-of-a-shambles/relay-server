@@ -9,6 +9,7 @@ require_relative "db"
 require_relative "event_bus"
 require_relative "git"
 require_relative "llm_call_store"
+require_relative "bind_safety"
 require_relative "pairing_service"
 require_relative "repo_store"
 require_relative "stats"
@@ -83,8 +84,8 @@ module RelayDaemon
     post "/pair/start" do
       content_type :json
 
-      unless ["127.0.0.1", "::1"].include?(request.ip)
-        halt 403, JSON.generate({ error: "pairing only allowed from localhost" })
+      unless RelayDaemon::BindSafety.safe?(request.ip)
+        halt 403, JSON.generate({ error: "pairing only allowed from private networks" })
       end
 
       svc = settings.pairing_service
