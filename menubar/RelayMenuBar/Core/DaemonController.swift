@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 
 final class DaemonController {
@@ -39,13 +40,16 @@ final class DaemonController {
     }
 
     func stop() {
-        guard let p = process else {
-            return
-        }
-
-        if p.isRunning {
-            p.terminate()
-        }
+        guard let p = process else { return }
+        // kill(-pgid, SIGTERM) sends SIGTERM to the entire process group so
+        // the Ruby/Puma child (forked by the zsh wrapper) is also terminated.
+        // p.terminate() calls kill(pid, SIGTERM) which only kills the shell;
+        // Puma is orphaned, keeps port 17777, and the next Start fails with
+        // EADDRINUSE.  Foundation.Process uses POSIX_SPAWN_SETPGROUP so the
+        // shell becomes its own process-group leader (PGID == shell.PID), and
+        // all children inherit that PGID — so kill(-shellPID, SIGTERM) reaches
+        // the full shell+Puma subtree.
+        Darwin.kill(-p.processIdentifier, SIGTERM)
         process = nil
     }
 
