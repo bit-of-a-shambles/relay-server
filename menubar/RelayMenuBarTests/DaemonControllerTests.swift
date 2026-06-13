@@ -22,4 +22,16 @@ final class DaemonControllerTests: XCTestCase {
         let url = DaemonController.pairingStartURL(baseURL: base)
         XCTAssertEqual(url.absoluteString, "http://127.0.0.1:17777/pair/start")
     }
+
+    func testPairingPayloadQRCodeContentIncludesEncodedURLAndCode() {
+        let payload = DaemonController.PairingPayload(
+            daemonURL: "http://127.0.0.1:17777",
+            pairingCode: "abc 123"
+        )
+
+        XCTAssertEqual(
+            payload.qrContent(),
+            "relay://pair?url=http://127.0.0.1:17777&code=abc%20123"
+        )
+    }
 }
