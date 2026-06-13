@@ -284,6 +284,24 @@ module RelayDaemon
       JSON.generate(task)
     end
 
+    get "/tasks" do
+      content_type :json
+
+      t_store = settings.task_store
+      halt 503, JSON.generate({ error: "task store not configured" }) if t_store.nil?
+
+      repo_id_param = params[:repoId]
+      tasks = if repo_id_param && !repo_id_param.empty?
+        repo_id = repo_id_param.to_i
+        halt 422, JSON.generate({ error: "repoId must be a positive integer" }) unless repo_id > 0
+        t_store.all_for_repo(repo_id)
+      else
+        t_store.all
+      end
+
+      JSON.generate(tasks)
+    end
+
     get "/tasks/:id" do
       content_type :json
 
