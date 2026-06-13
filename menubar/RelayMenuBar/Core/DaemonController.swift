@@ -2,6 +2,20 @@ import AppKit
 import Darwin
 import Foundation
 
+// MARK: - URLSession seam
+
+protocol DataSession {
+    func fetchData(for request: URLRequest) async throws -> (Data, URLResponse)
+}
+
+extension URLSession: DataSession {
+    func fetchData(for request: URLRequest) async throws -> (Data, URLResponse) {
+        try await data(for: request)
+    }
+}
+
+// MARK: -
+
 final class DaemonController {
     private var process: Process?
     private var isStarting = false
@@ -64,12 +78,14 @@ final class DaemonController {
         }
     }
 
-    func fetchPairingPayload() async throws -> PairingPayload {
+    func fetchPairingPayload(
+        session: any DataSession = URLSession.shared
+    ) async throws -> PairingPayload {
         var request = URLRequest(url: Self.pairingStartURL(baseURL: daemonBaseURL))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.fetchData(for: request)
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             let text = String(data: data, encoding: .utf8) ?? "pair/start failed"
             throw NSError(domain: "RelayMenuBar", code: 1, userInfo: [NSLocalizedDescriptionKey: text])
@@ -154,14 +170,22 @@ final class DaemonController {
         let decoded = try JSONDecoder().decode(PairStartResponse.self, from: data)
         guard let parsedURL = URL(string: decoded.qrPayload.url),
               let scheme = parsedURL.scheme?.lowercased(),
-              scheme == "http" || scheme == "https" else {
+              scheme == "http" || scheme == "https",
+              let host = parsedURL.host,
+              !isLoopback(host) else {
             throw NSError(
                 domain: "RelayMenuBar",
                 code: 2,
-                userInfo: [NSLocalizedDescriptionKey: "pair/start returned invalid daemon URL"]
+                userInfo: [NSLocalizedDescriptionKey: "pair/start returned a loopback URL — restart the daemon with RELAY_DAEMON_HOST set to a Tailscale or LAN address"]
             )
         }
         return PairingPayload(daemonURL: decoded.qrPayload.url, pairingCode: decoded.qrPayload.pairingCode)
+    }
+}
+
+extension DaemonController {
+    private static func isLoopback(_ host: String) -> Bool {
+        host == "localhost" || host == "::1" || host == "127.0.0.1" || host.hasPrefix("127.")
     }
 
     static func shellEscape(_ value: String) -> String {

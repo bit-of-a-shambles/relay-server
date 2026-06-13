@@ -2,6 +2,41 @@ import XCTest
 import Darwin
 @testable import RelayMenuBar
 
+// MARK: - Minimal DataSession stub for fetchPairingPayload tests
+
+private struct StubSession: DataSession {
+    typealias Handler = (URLRequest) async throws -> (Data, URLResponse)
+    let handler: Handler
+    func fetchData(for request: URLRequest) async throws -> (Data, URLResponse) {
+        try await handler(request)
+    }
+}
+
+private func okResponse(for request: URLRequest) -> HTTPURLResponse {
+    HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+}
+
+private func stubResponse(for request: URLRequest, status: Int, body: String) -> (Data, URLResponse) {
+    let resp = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!
+    return (Data(body.utf8), resp)
+}
+
+func XCTAssertThrowsErrorAsync(
+    _ expression: @autoclosure () async throws -> some Any,
+    _ message: String = "",
+    file: StaticString = #file,
+    line: UInt = #line
+) async {
+    do {
+        _ = try await expression()
+        XCTFail("expected error to be thrown\(message.isEmpty ? "" : ": \(message)")", file: file, line: line)
+    } catch {
+        // expected
+    }
+}
+
+// MARK: -
+
 final class DaemonControllerTests: XCTestCase {
     func testShellEscapeHandlesSingleQuotes() {
         let value = "/tmp/it'works"
@@ -73,6 +108,76 @@ final class DaemonControllerTests: XCTestCase {
         let data = Data("{}".utf8)
 
         XCTAssertThrowsError(try DaemonController.decodePairingPayload(from: data))
+    }
+
+    // Regression: decodePairingPayload must reject loopback daemon URLs.
+    // When the daemon runs with RELAY_DAEMON_HOST=127.0.0.1 it returns
+    // url="http://127.0.0.1:17777".  If the menu bar accepts that and
+    // shows the QR, the phone stores 127.0.0.1 and connects to its own
+    // loopback → "Could not connect to the server."
+    func testDecodePairingPayloadRejectsLoopbackDaemonURL() {
+        let loopbackPayloads = [
+            #"{"qrPayload":{"url":"http://127.0.0.1:17777","pairingCode":"abcd1234"}}"#,
+            #"{"qrPayload":{"url":"http://127.9.9.9:17777","pairingCode":"abcd1234"}}"#,
+            #"{"qrPayload":{"url":"http://localhost:17777","pairingCode":"abcd1234"}}"#,
+        ]
+        for json in loopbackPayloads {
+            XCTAssertThrowsError(
+                try DaemonController.decodePairingPayload(from: Data(json.utf8)),
+                "expected loopback URL to be rejected: \(json)"
+            )
+        }
+    }
+
+    func testDecodePairingPayloadAcceptsTailscaleURL() throws {
+        let data = Data(#"{"qrPayload":{"url":"http://100.64.0.1:17777","pairingCode":"abcd1234"}}"#.utf8)
+        let payload = try DaemonController.decodePairingPayload(from: data)
+        XCTAssertEqual(payload.daemonURL, "http://100.64.0.1:17777")
+    }
+
+    // Regression: fetchPairingPayload must POST to http://127.0.0.1:17777/pair/start
+    // (daemonBaseURL, which is always loopback), never to a Tailscale bind-host URL.
+    // Before the fix, start() set daemonBaseURL = http://<tailscaleIP>:17777 so the
+    // menu bar tried to reach the daemon via the Tailscale interface → ECONNREFUSED
+    // → "Could not connect to the server."
+    func testFetchPairingPayloadPostsToLoopbackURL() async throws {
+        setenv("RELAY_DAEMON_HOST", "100.66.77.88", 1)
+        defer { unsetenv("RELAY_DAEMON_HOST") }
+
+        let controller = DaemonController()
+        var capturedURL: URL?
+
+        let session = StubSession { request in
+            capturedURL = request.url
+            let body = #"{"qrPayload":{"url":"http://100.66.77.88:17777","pairingCode":"xy123456"}}"#
+            return stubResponse(for: request, status: 200, body: body)
+        }
+
+        _ = try await controller.fetchPairingPayload(session: session)
+
+        XCTAssertEqual(
+            capturedURL?.absoluteString,
+            "http://127.0.0.1:17777/pair/start",
+            "fetchPairingPayload must use the loopback daemonBaseURL; using the Tailscale bind-host causes 'Could not connect' via Tailscale"
+        )
+    }
+
+    func testFetchPairingPayloadThrowsOnNon200() async {
+        let controller = DaemonController()
+        let session = StubSession { request in
+            stubResponse(for: request, status: 503, body: "{\"error\":\"daemon is bound to loopback only\"}")
+        }
+        await XCTAssertThrowsErrorAsync(try await controller.fetchPairingPayload(session: session))
+    }
+
+    func testFetchPairingPayloadThrowsWhenResponseHasLoopbackURL() async {
+        // Even if the daemon somehow slips through and returns a loopback URL with
+        // a 200 status, decodePairingPayload must reject it.
+        let controller = DaemonController()
+        let session = StubSession { request in
+            stubResponse(for: request, status: 200, body: #"{"qrPayload":{"url":"http://127.0.0.1:17777","pairingCode":"xy123456"}}"#)
+        }
+        await XCTAssertThrowsErrorAsync(try await controller.fetchPairingPayload(session: session))
     }
 
     func testResolveRepoRootPrefersValidEnvOverride() {
