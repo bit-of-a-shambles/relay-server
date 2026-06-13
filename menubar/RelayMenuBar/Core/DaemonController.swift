@@ -65,8 +65,7 @@ final class DaemonController {
             throw NSError(domain: "RelayMenuBar", code: 1, userInfo: [NSLocalizedDescriptionKey: text])
         }
 
-        let decoded = try JSONDecoder().decode(PairStartResponse.self, from: data)
-        return PairingPayload(daemonURL: decoded.qrPayload.url, pairingCode: decoded.qrPayload.pairingCode)
+        return try Self.decodePairingPayload(from: data)
     }
 
     func openLogsFolder() {
@@ -84,11 +83,25 @@ final class DaemonController {
 
     static func daemonCommand(repoRootPath: String) -> String {
         let escaped = shellEscape(repoRootPath)
-        return "cd \(escaped)/daemon && RELAY_DAEMON_HOST=127.0.0.1 RELAY_DAEMON_PORT=17777 bundle exec rackup -p 17777 config.ru"
+        return "cd \(escaped)/daemon && HOST=\"${RELAY_DAEMON_HOST:-$(tailscale ip -4 2>/dev/null | head -n 1)}\" && if [ -z \"$HOST\" ]; then HOST=127.0.0.1; fi && RELAY_DAEMON_HOST=\"$HOST\" RELAY_DAEMON_PORT=17777 bundle exec rackup -p 17777 config.ru"
     }
 
     static func pairingStartURL(baseURL: URL) -> URL {
         baseURL.appendingPathComponent("pair/start")
+    }
+
+    static func decodePairingPayload(from data: Data) throws -> PairingPayload {
+        let decoded = try JSONDecoder().decode(PairStartResponse.self, from: data)
+        guard let parsedURL = URL(string: decoded.qrPayload.url),
+              let scheme = parsedURL.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" else {
+            throw NSError(
+                domain: "RelayMenuBar",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "pair/start returned invalid daemon URL"]
+            )
+        }
+        return PairingPayload(daemonURL: decoded.qrPayload.url, pairingCode: decoded.qrPayload.pairingCode)
     }
 
     static func shellEscape(_ value: String) -> String {

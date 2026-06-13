@@ -105,6 +105,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 imageView.heightAnchor.constraint(equalToConstant: 180)
             ])
             stack.addArrangedSubview(imageView)
+        } else {
+            let fallback = NSTextField(labelWithString: "QR unavailable. Use manual code entry in iOS.")
+            fallback.alignment = .center
+            fallback.textColor = .secondaryLabelColor
+            fallback.maximumNumberOfLines = 2
+            stack.addArrangedSubview(fallback)
         }
 
         let hint = NSTextField(labelWithString: "Scan with Relay iPhone app")
