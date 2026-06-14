@@ -12,6 +12,7 @@ require_relative "llm_call_store"
 require_relative "bind_safety"
 require_relative "pairing_service"
 require_relative "repo_store"
+require_relative "eval_store"
 require_relative "stats"
 require_relative "task_runner"
 require_relative "task_store"
@@ -179,6 +180,15 @@ module RelayDaemon
       rescue ArgumentError => e
         halt 422, JSON.generate({ error: e.message })
       end
+    end
+
+    # Per-model test-verified outcomes — the eval-dataset rollup that drives
+    # outcome-verified routing and the savings dashboard's pass-rate.
+    get "/eval/model-outcomes" do
+      content_type :json
+      db = settings.stats_db
+      halt 503, JSON.generate({ error: "database not configured" }) if db.nil?
+      JSON.generate({ modelOutcomes: RelayDaemon::EvalStore.new(db).model_outcomes })
     end
 
     # ----- Internal call-log ingestion -----
