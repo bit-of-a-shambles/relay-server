@@ -277,7 +277,12 @@ module RelayDaemon
         db_path:      cfg.db_path,
         event_bus:    settings.event_bus,
         test_command: repo["testCommand"],
-        agent_env:    { "RELAY_TASK_ID" => task_id }
+        agent_env:    {
+          "RELAY_TASK_ID" => task_id,
+          # Per-task router base URL: the router parses the task id from the path
+          # and stamps it on every call record, joining calls to test outcomes.
+          "ANTHROPIC_BASE_URL" => "#{cfg.router_base_url}/task/#{task_id}"
+        }
       )
 
       status 201
