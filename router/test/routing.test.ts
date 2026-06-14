@@ -164,6 +164,7 @@ describe("call log sinks", () => {
     try {
       const sink = new JsonlCallLogSink(path);
       sink.record({
+        taskId: null,
         requestedModel: "requested",
         routedModel: "routed",
         tier: 1,
@@ -226,6 +227,7 @@ describe("call log sinks", () => {
 });
 
 const sampleRecord: LlmCallRecord = {
+  taskId: "task-1",
   requestedModel: "claude-haiku",
   routedModel: "moonshotai/kimi-k2",
   tier: 1,
@@ -261,7 +263,7 @@ describe("HttpCallLogSink", () => {
     expect(req.headers.get("Authorization")).toBe("Bearer my-token");
     expect(req.headers.get("Content-Type")).toBe("application/json");
     const body = JSON.parse(await req.text());
-    expect(body).toMatchObject({ requestedModel: "claude-haiku", status: "success" });
+    expect(body).toMatchObject({ taskId: "task-1", requestedModel: "claude-haiku", status: "success" });
   });
 
   it("swallows network errors (Error instance) and logs to console.error", async () => {

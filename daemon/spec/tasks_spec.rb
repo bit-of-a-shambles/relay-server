@@ -99,12 +99,14 @@ RSpec.describe "Tasks API" do
       expect(File.exist?(File.join(agent_log_dir, task_id, "agent.log"))).to be true
     end
 
-    it "passes RELAY_TASK_ID to the agent environment" do
+    it "passes RELAY_TASK_ID and a per-task router base URL to the agent environment" do
       post_task
       task_id = JSON.parse(last_response.body)["id"]
       wait_for_task(task_id)
       env_file = File.join(worktrees_dir, task_id, "env_task_id.txt")
       expect(File.read(env_file)).to eq(task_id)
+      base_file = File.join(worktrees_dir, task_id, "env_anthropic_base.txt")
+      expect(File.read(base_file)).to eq("http://127.0.0.1:7778/api/task/#{task_id}")
     end
 
     it "leaves testsPassed null when the repo has no testCommand" do

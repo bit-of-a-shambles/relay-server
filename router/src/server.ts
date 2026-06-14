@@ -83,7 +83,9 @@ async function handleRequest(
     return;
   }
 
-  if (request.method !== "POST" || url.pathname !== "/api/v1/messages") {
+  const messagesRoute =
+    request.method === "POST" ? matchMessagesPath(url.pathname) : null;
+  if (messagesRoute === null) {
     sendJson(response, 404, {
       type: "error",
       error: {
@@ -93,6 +95,7 @@ async function handleRequest(
     });
     return;
   }
+  const taskId = messagesRoute.taskId;
 
   if (options.openRouterApiKey === undefined || options.openRouterApiKey.length === 0) {
     sendJson(response, 500, {
@@ -120,7 +123,7 @@ async function handleRequest(
 
     if (!upstreamResponse.response.ok) {
       const errorMessage = await readUpstreamError(upstreamResponse.response);
-      await recordCall(options.callLogSink, route, latencyMs, 0, null, "error", errorMessage);
+      await recordCall(options.callLogSink, route, latencyMs, 0, null, "error", errorMessage, taskId);
       sendJson(response, upstreamResponse.response.status, {
         type: "error",
         error: {
@@ -131,7 +134,7 @@ async function handleRequest(
       return;
     }
 
-    await recordCall(options.callLogSink, route, latencyMs, 0, null, "success", null);
+    await recordCall(options.callLogSink, route, latencyMs, 0, null, "success", null, taskId);
 
     if (upstreamResponse.response.body === null) {
       sendJson(response, 502, {
@@ -165,7 +168,8 @@ async function handleRequest(
     anthropicRequest,
     route,
     options,
-    fetchImpl
+    fetchImpl,
+    taskId
   );
 
   if (result.response === undefined) {
@@ -203,7 +207,8 @@ async function executeNonStreamingWithRetry(
   anthropicRequest: AnthropicMessagesRequest,
   initialRoute: RoutingDecision,
   options: RouterServerOptions,
-  fetchImpl: typeof fetch
+  fetchImpl: typeof fetch,
+  taskId: string | null
 ): Promise<NonStreamingResult> {
   const attempts = [
     initialRoute,
@@ -224,7 +229,7 @@ async function executeNonStreamingWithRetry(
       const errorMessage = await readUpstreamError(attempt.response);
       lastStatus = attempt.response.status;
       lastError = errorMessage;
-      await recordCall(options.callLogSink, route, latencyMs, 0, null, "error", errorMessage);
+      await recordCall(options.callLogSink, route, latencyMs, 0, null, "error", errorMessage, taskId);
       continue;
     }
 
@@ -239,13 +244,14 @@ async function executeNonStreamingWithRetry(
         completionTokens,
         extractOpenRouterCostUsd(upstreamJson),
         "success",
-        null
+        null,
+        taskId
       );
       return { response: openAIResponse, status: 200, errorMessage: null };
     } catch (error: unknown) {
       lastStatus = 502;
       lastError = error instanceof Error ? error.message : "Invalid OpenRouter response";
-      await recordCall(options.callLogSink, route, latencyMs, 0, null, "error", lastError);
+      await recordCall(options.callLogSink, route, latencyMs, 0, null, "error", lastError, taskId);
     }
   }
 
@@ -288,13 +294,15 @@ async function recordCall(
   completionTokens: number,
   costUsd: number | null,
   status: LlmCallRecord["status"],
-  errorMessage: string | null
+  errorMessage: string | null,
+  taskId: string | null
 ): Promise<void> {
   if (sink === undefined) {
     return;
   }
 
   await sink.record({
+    taskId,
     requestedModel: route.requestedModel,
     routedModel: route.routedModel,
     tier: route.tier,
@@ -325,6 +333,19 @@ function extractOpenRouterCostUsd(value: unknown): number | null {
 
   const cost = (usage as Record<string, unknown>).cost;
   return typeof cost === "number" ? cost : null;
+}
+
+function matchMessagesPath(pathname: string): { taskId: string | null } | null {
+  if (pathname === "/api/v1/messages") {
+    return { taskId: null };
+  }
+
+  const match = /^\/api\/task\/([^/]+)\/v1\/messages$/.exec(pathname);
+  if (match !== null) {
+    return { taskId: decodeURIComponent(match[1] as string) };
+  }
+
+  return null;
 }
 
 function parseAnthropicRequest(body: string): AnthropicMessagesRequest {

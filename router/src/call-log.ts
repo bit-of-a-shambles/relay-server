@@ -1,6 +1,7 @@
 import { appendFileSync } from "node:fs";
 
 export type LlmCallRecord = {
+  taskId: string | null;
   requestedModel: string;
   routedModel: string;
   tier: number;

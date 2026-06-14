@@ -86,6 +86,44 @@ describe("Relay router HTTP server", () => {
     });
   });
 
+  it("stamps the task id from /api/task/:taskId/v1/messages onto call records", async () => {
+    const sink = new MemoryCallLogSink();
+    const upstream = await createTestServer((request, response) => {
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(
+        JSON.stringify({
+          id: "chatcmpl_task",
+          model: "openrouter/test",
+          choices: [
+            { index: 0, finish_reason: "stop", message: { role: "assistant", content: "ok" } }
+          ],
+          usage: { prompt_tokens: 5, completion_tokens: 1, total_tokens: 6 }
+        })
+      );
+    });
+    openServers.push(upstream);
+
+    const router = await listenRouterWithOptions({
+      openRouterBaseUrl: upstream.baseUrl,
+      callLogSink: sink
+    });
+    openServers.push(router);
+
+    const response = await fetch(`${router.baseUrl}/api/task/task-abc-123/v1/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-5",
+        max_tokens: 50,
+        messages: [{ role: "user", content: "hi" }]
+      })
+    });
+
+    expect(response.status).toBe(200);
+    expect(sink.records).toHaveLength(1);
+    expect(sink.records[0]?.taskId).toBe("task-abc-123");
+  });
+
   it("routes by config, retries non-streaming upstream errors, and records call logs", async () => {
     const sink = new MemoryCallLogSink();
     let attempt = 0;
@@ -148,6 +186,7 @@ describe("Relay router HTTP server", () => {
     ]);
     expect(sink.records).toHaveLength(2);
     expect(sink.records[0]).toMatchObject({
+      taskId: null,
       requestedModel: "claude-sonnet-4-5",
       routedModel: "anthropic/claude-sonnet-latest",
       tier: 2,
@@ -365,6 +404,11 @@ describe("Relay router HTTP server", () => {
     await expect(notFound.json()).resolves.toMatchObject({
       error: { type: "not_found_error" }
     });
+
+    const postNotFound = await fetch(`${routerWithoutKey.baseUrl}/api/wrong`, {
+      method: "POST"
+    });
+    expect(postNotFound.status).toBe(404);
 
     const missingKey = await fetch(`${routerWithoutKey.baseUrl}/api/v1/messages`, {
       method: "POST",
