@@ -1,0 +1,98 @@
+# typed: true
+# frozen_string_literal: true
+
+require "json"
+require "fileutils"
+require "sorbet-runtime"
+require_relative "eval_store"
+
+module RelayDaemon
+  # Turns accumulated test outcomes into a routing config the TypeScript router
+  # hot-reloads (RELAY_ROUTING_CONFIG). Within each tier the models are reordered
+  # so the one with the best measured test pass rate (given enough samples) comes
+  # first — the router routes each tier to its first model, so routing now learns
+  # from whether tests actually passed, unlike OpenRouter's outcome-blind routing.
+  class RoutingConfigWriter
+    extend T::Sig
+
+    # Tasks-with-tests a model needs before its pass rate is allowed to reorder a
+    # tier (avoids overreacting to one or two early results).
+    MIN_SAMPLES = 5
+
+    DEFAULT_BASE_CONFIG = T.let(
+      {
+        "tiers" => {
+          "0" => ["qwen/qwen3-coder-small"],
+          "1" => ["moonshotai/kimi-k2", "deepseek/deepseek-chat"],
+          "2" => ["anthropic/claude-sonnet-latest"],
+          "3" => ["anthropic/claude-opus-latest"]
+        },
+        "rules" => [
+          { "when" => "requestedModel contains 'haiku'", "tier" => 0 },
+          { "when" => "promptTokens > 60000", "tier" => 2 },
+          { "when" => "default", "tier" => 1 }
+        ],
+        "qualityDial" => { "default" => 5 },
+        "frontierModel" => "anthropic/claude-opus-latest"
+      }.freeze,
+      T::Hash[String, T.untyped]
+    )
+
+    sig do
+      params(
+        eval_store: EvalStore,
+        base_config: T::Hash[String, T.untyped],
+        min_samples: Integer
+      ).void
+    end
+    def initialize(eval_store, base_config: DEFAULT_BASE_CONFIG, min_samples: MIN_SAMPLES)
+      @eval_store  = eval_store
+      @base_config = base_config
+      @min_samples = min_samples
+    end
+
+    # Routing-config hash (router schema) with each tier's models reordered by
+    # measured pass rate.
+    sig { returns(T::Hash[String, T.untyped]) }
+    def config
+      rates = pass_rates
+      tiers = T.cast(@base_config.fetch("tiers"), T::Hash[String, T::Array[String]])
+      reordered = tiers.transform_values { |models| reorder(models, rates) }
+      @base_config.merge("tiers" => reordered)
+    end
+
+    # Writes the config atomically (parent dir created) so the router's
+    # mtime-based reload picks it up without a torn read.
+    sig { params(path: String).void }
+    def write!(path)
+      FileUtils.mkdir_p(File.dirname(path))
+      tmp = "#{path}.#{Process.pid}.tmp"
+      File.write(tmp, JSON.pretty_generate(config))
+      File.rename(tmp, path)
+    end
+
+    private
+
+    # model => pass rate, only for models with a known rate and enough samples.
+    sig { returns(T::Hash[String, Float]) }
+    def pass_rates
+      out = {}
+      @eval_store.model_outcomes.each do |o|
+        next if o[:passRate].nil?
+        next if o[:tasksWithTests].to_i < @min_samples
+
+        out[o[:model]] = o[:passRate].to_f
+      end
+      out
+    end
+
+    # Stable reorder: models with a measured rate sort first by rate desc;
+    # the rest keep their base order after them.
+    sig { params(models: T::Array[String], rates: T::Hash[String, Float]).returns(T::Array[String]) }
+    def reorder(models, rates)
+      scored, unscored = models.partition { |m| rates.key?(m) }
+      scored.sort_by! { |m| -T.must(rates[m]) }
+      scored + unscored
+    end
+  end
+end

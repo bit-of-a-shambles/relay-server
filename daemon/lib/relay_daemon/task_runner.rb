@@ -6,7 +6,9 @@ require "time"
 require "sorbet-runtime"
 require_relative "db"
 require_relative "event_bus"
+require_relative "eval_store"
 require_relative "git"
+require_relative "routing_config_writer"
 require_relative "task_store"
 
 module RelayDaemon
@@ -34,10 +36,11 @@ module RelayDaemon
         db_path: String,
         event_bus: EventBus,
         test_command: T.nilable(String),
-        agent_env: T::Hash[String, String]
+        agent_env: T::Hash[String, String],
+        routing_config_path: T.nilable(String)
       ).returns(Thread)
     end
-    def self.run_async(task_id:, worktree_path:, log_path:, agent_argv:, db_path:, event_bus:, test_command: nil, agent_env: {})
+    def self.run_async(task_id:, worktree_path:, log_path:, agent_argv:, db_path:, event_bus:, test_command: nil, agent_env: {}, routing_config_path: nil)
       Thread.new do
         db = Db.new(db_path)
         ts = TaskStore.new(db)
@@ -82,6 +85,12 @@ module RelayDaemon
           event_bus.publish(type: "task.finished", task_id: task_id, payload: { "status" => "failed" })
         end
         event_bus.publish(type: "stats.updated", task_id: task_id)
+
+        # Learn from this task's outcome: refresh the router's config so the
+        # cheapest model that passes tests is preferred on the next task.
+        if routing_config_path
+          RoutingConfigWriter.new(EvalStore.new(db)).write!(routing_config_path)
+        end
 
         db.connection.close
       end

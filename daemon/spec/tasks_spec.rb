@@ -109,6 +109,26 @@ RSpec.describe "Tasks API" do
       expect(File.read(base_file)).to eq("http://127.0.0.1:7778/api/task/#{task_id}")
     end
 
+    it "writes the learned routing config after a task finishes when configured" do
+      routing_path = File.join(Dir.mktmpdir, "config", "routing.json")
+      RelayDaemon::App.set(:relay_config, RelayDaemon::Config.new(
+        daemon_token: token, host: "127.0.0.1", port: 7777, db_path: db_path,
+        worktrees_dir: worktrees_dir, agent_log_dir: agent_log_dir,
+        agent_command: agent_cmd, routing_config_path: routing_path
+      ))
+      post_task
+      task_id = JSON.parse(last_response.body)["id"]
+      wait_for_task(task_id)
+
+      # The write happens in the task thread just after finish; poll briefly.
+      deadline = Time.now + 5
+      sleep 0.02 until File.exist?(routing_path) || Time.now > deadline
+
+      expect(File.exist?(routing_path)).to be true
+      parsed = JSON.parse(File.read(routing_path))
+      expect(parsed["tiers"]["1"]).to eq(["moonshotai/kimi-k2", "deepseek/deepseek-chat"])
+    end
+
     it "leaves testsPassed null when the repo has no testCommand" do
       post_task
       task_id = JSON.parse(last_response.body)["id"]

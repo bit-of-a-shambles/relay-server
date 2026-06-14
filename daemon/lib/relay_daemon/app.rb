@@ -292,7 +292,8 @@ module RelayDaemon
           # Per-task router base URL: the router parses the task id from the path
           # and stamps it on every call record, joining calls to test outcomes.
           "ANTHROPIC_BASE_URL" => "#{cfg.router_base_url}/task/#{task_id}"
-        }
+        },
+        routing_config_path: cfg.routing_config_path
       )
 
       status 201

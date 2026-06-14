@@ -56,7 +56,14 @@ export function createRoutingConfigLoader(path: string | undefined): RoutingConf
 
   return {
     load: () => {
-      const mtimeMs = statSync(path).mtimeMs;
+      let mtimeMs: number;
+      try {
+        mtimeMs = statSync(path).mtimeMs;
+      } catch {
+        // Config not written yet (the daemon writes it from learned outcomes).
+        // Stay up on the built-in default until it appears.
+        return DEFAULT_ROUTING_CONFIG;
+      }
       if (cached !== undefined && cached.mtimeMs === mtimeMs) {
         return cached.config;
       }
