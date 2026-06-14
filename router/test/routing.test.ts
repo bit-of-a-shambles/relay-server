@@ -25,6 +25,11 @@ describe("routing", () => {
     expect(createRoutingConfigLoader("").load()).toEqual(DEFAULT_ROUTING_CONFIG);
   });
 
+  it("falls back to default routing when the config file does not exist", () => {
+    const missing = join(tmpdir(), "relay-routing-missing-xyz.json");
+    expect(createRoutingConfigLoader(missing).load()).toEqual(DEFAULT_ROUTING_CONFIG);
+  });
+
   it("loads, caches, and reloads routing config files", async () => {
     const dir = mkdtempSync(join(tmpdir(), "relay-routing-"));
     const path = join(dir, "routing.json");

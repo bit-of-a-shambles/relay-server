@@ -15,6 +15,7 @@ module RelayDaemon
     const :agent_log_dir, String, default: File.expand_path("~/.relay/tasks")
     const :agent_command, T.nilable(String), default: nil
     const :router_base_url, String, default: "http://127.0.0.1:7778/api"
+    const :routing_config_path, T.nilable(String), default: nil
 
     sig { returns(Config) }
     def self.from_env
@@ -26,7 +27,8 @@ module RelayDaemon
         worktrees_dir: T.must(ENV.fetch("RELAY_WORKTREES_DIR", File.expand_path("~/.relay/worktrees"))),
         agent_log_dir: T.must(ENV.fetch("RELAY_AGENT_LOG_DIR", File.expand_path("~/.relay/tasks"))),
         agent_command: ENV["RELAY_AGENT_COMMAND"],
-        router_base_url: T.must(ENV.fetch("RELAY_ROUTER_BASE_URL", "http://127.0.0.1:7778/api"))
+        router_base_url: T.must(ENV.fetch("RELAY_ROUTER_BASE_URL", "http://127.0.0.1:7778/api")),
+        routing_config_path: ENV["RELAY_ROUTING_CONFIG"]
       )
     end
   end
