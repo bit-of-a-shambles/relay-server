@@ -25,14 +25,175 @@ Options = Struct.new(
   :routing_config,
   :timeout_seconds,
   :learn_routing,
+  :max_tokens,
   keyword_init: true
 )
+
+Fixture = Struct.new(
+  :id,
+  :category,
+  :prompt,
+  :files,
+  :editable_files,
+  :test_command,
+  keyword_init: true
+)
+
+FIXTURES = [
+  Fixture.new(
+    id: "bug-final-price",
+    category: "bug fix",
+    prompt: "Fix final_price_cents so it returns the customer final price after the percent discount.",
+    editable_files: ["discount.rb"],
+    test_command: "ruby test_discount.rb",
+    files: {
+      "discount.rb" => <<~RUBY,
+        def final_price_cents(price_cents, percent_off)
+          price_cents * percent_off / 100
+        end
+      RUBY
+      "test_discount.rb" => <<~RUBY
+        require_relative "./discount"
+
+        def assert_equal(expected, actual)
+          raise "expected \#{expected.inspect}, got \#{actual.inspect}" unless expected == actual
+        end
+
+        assert_equal 750, final_price_cents(1000, 25)
+        assert_equal 1000, final_price_cents(1000, 0)
+        assert_equal 0, final_price_cents(1000, 100)
+      RUBY
+    }
+  ),
+  Fixture.new(
+    id: "behavior-greeting",
+    category: "unit test/task behavior change",
+    prompt: "Change greeting_for so it trims names, uses guest for nil or blank names, and adds an exclamation mark.",
+    editable_files: ["greeting.rb"],
+    test_command: "ruby test_greeting.rb",
+    files: {
+      "greeting.rb" => <<~RUBY,
+        def greeting_for(name)
+          "Hello, \#{name}"
+        end
+      RUBY
+      "test_greeting.rb" => <<~RUBY
+        require_relative "./greeting"
+
+        def assert_equal(expected, actual)
+          raise "expected \#{expected.inspect}, got \#{actual.inspect}" unless expected == actual
+        end
+
+        assert_equal "Hello, Ada!", greeting_for(" Ada ")
+        assert_equal "Hello, guest!", greeting_for("   ")
+        assert_equal "Hello, guest!", greeting_for(nil)
+      RUBY
+    }
+  ),
+  Fixture.new(
+    id: "refactor-score-summary",
+    category: "refactor-with-tests",
+    prompt: "Extract normalize_scores(scores), have both public methods use it, discard nils, round numeric scores, and count passing scores at 70 or above.",
+    editable_files: ["scores.rb"],
+    test_command: "ruby test_scores.rb",
+    files: {
+      "scores.rb" => <<~RUBY,
+        def passing_scores(scores)
+          scores.select { |score| score >= 60 }.map { |score| score.round }
+        end
+
+        def score_summary(scores)
+          passed = scores.select { |score| score >= 60 }.map { |score| score.round }
+          "\#{passed.length}/\#{scores.length} passing: \#{passed.join(",")}"
+        end
+      RUBY
+      "test_scores.rb" => <<~RUBY
+        require_relative "./scores"
+
+        def assert_equal(expected, actual)
+          raise "expected \#{expected.inspect}, got \#{actual.inspect}" unless expected == actual
+        end
+
+        scores = [69.6, nil, 88.2, 40.1]
+        assert_equal [70, 88, 40], normalize_scores(scores)
+        assert_equal [70, 88], passing_scores(scores)
+        assert_equal "2/4 passing: 70,88", score_summary(scores)
+      RUBY
+    }
+  ),
+  Fixture.new(
+    id: "parser-settings",
+    category: "parsing/string edge case",
+    prompt: "Make parse_settings accept comma or semicolon separators, strip whitespace, split on only the first colon, ignore empty pairs, and return an empty hash for nil or blank input.",
+    editable_files: ["settings_parser.rb"],
+    test_command: "ruby test_settings_parser.rb",
+    files: {
+      "settings_parser.rb" => <<~RUBY,
+        def parse_settings(input)
+          input.split(",").map { |pair| pair.split(":") }.to_h
+        end
+      RUBY
+      "test_settings_parser.rb" => <<~RUBY
+        require_relative "./settings_parser"
+
+        def assert_equal(expected, actual)
+          raise "expected \#{expected.inspect}, got \#{actual.inspect}" unless expected == actual
+        end
+
+        assert_equal(
+          { "mode" => "fast", "path" => "a:b", "retry" => "3" },
+          parse_settings(" mode : fast ; path: a:b, retry : 3 ,, ")
+        )
+        assert_equal({}, parse_settings(nil))
+        assert_equal({}, parse_settings(" ; , "))
+      RUBY
+    }
+  ),
+  Fixture.new(
+    id: "cli-status-output",
+    category: "CLI/output behavior",
+    prompt: "Update relay_status.rb so NAME is required. Default output is 'Relay ready for NAME'. With --json NAME, output compact JSON with name and status. Missing name exits nonzero and prints usage to stderr.",
+    editable_files: ["relay_status.rb"],
+    test_command: "ruby test_relay_status.rb",
+    files: {
+      "relay_status.rb" => <<~RUBY,
+        name = ARGV[0] || "Relay"
+        puts "relay \#{name}"
+      RUBY
+      "test_relay_status.rb" => <<~RUBY
+        require "json"
+        require "open3"
+        require "rbconfig"
+
+        def run_cli(*args)
+          Open3.capture3(RbConfig.ruby, "relay_status.rb", *args)
+        end
+
+        out, err, status = run_cli("Ada")
+        raise "expected success" unless status.success?
+        raise "bad stdout: \#{out.inspect}" unless out == "Relay ready for Ada\\n"
+        raise "bad stderr: \#{err.inspect}" unless err == ""
+
+        out, err, status = run_cli("--json", "Ada")
+        raise "expected success" unless status.success?
+        raise "bad json" unless JSON.parse(out) == { "name" => "Ada", "status" => "ready" }
+        raise "bad stderr: \#{err.inspect}" unless err == ""
+
+        out, err, status = run_cli
+        raise "expected failure" if status.success?
+        raise "expected usage" unless err.include?("usage: relay_status [--json] NAME")
+        raise "expected empty stdout" unless out == ""
+      RUBY
+    }
+  )
+].freeze
 
 class EvalRunner
   TERMINAL_STATUSES = %w[needs_review failed approved rejected].freeze
 
   def initialize(options)
     @options = options
+    @fixtures = FIXTURES.first(options.tasks)
     @token = "relay-eval-#{SecureRandom.hex(12)}"
     @processes = []
   end
@@ -50,13 +211,27 @@ class EvalRunner
   private
 
   def run_dry
-    Dir.mktmpdir("relay-low-cost-eval-dry-") do |dir|
-      repos = create_fixture_repos(dir, @options.tasks)
+    Dir.mktmpdir("relay-coding-eval-dry-") do |dir|
+      repos = create_fixture_repos(File.join(dir, "repos"))
+      checks = repos.map do |repo|
+        status = run_shell(repo[:fixture].test_command, cwd: repo[:path])
+        {
+          fixture: repo[:fixture].id,
+          category: repo[:fixture].category,
+          path: repo[:path],
+          initialTestsPassed: status.success?
+        }
+      end
+
+      if checks.any? { |check| check[:initialTestsPassed] }
+        abort "dry-run expected every fixture to fail before model edits"
+      end
+
       puts JSON.pretty_generate(
         mode: "dry-run",
-        tasks: repos.length,
-        fixtureRepos: repos.map { |repo| repo[:path] },
+        fixtures: checks,
         routingConfig: @options.routing_config,
+        maxTokens: @options.max_tokens,
         nextCommand: "OPENROUTER_API_KEY=... scripts/low_cost_eval.rb --real"
       )
     end
@@ -65,10 +240,10 @@ class EvalRunner
   def run_real
     require_openrouter_key_available!
 
-    Dir.mktmpdir("relay-low-cost-eval-") do |dir|
+    Dir.mktmpdir("relay-coding-eval-") do |dir|
       @tmpdir = dir
       env_paths = prepare_environment(dir)
-      create_fixture_repos(File.join(dir, "repos"), @options.tasks)
+      create_fixture_repos(env_paths[:repos])
       build_router!
       start_daemon!(env_paths)
       start_router!(env_paths)
@@ -82,7 +257,8 @@ class EvalRunner
       result = {
         mode: "real",
         learnRouting: @options.learn_routing,
-        tasks: finished,
+        maxTokens: @options.max_tokens,
+        taskResults: summarize_tasks(finished),
         modelOutcomes: outcomes.fetch("modelOutcomes"),
         stats: stats,
         workdir: @options.keep ? dir : nil,
@@ -90,9 +266,7 @@ class EvalRunner
       }
       puts JSON.pretty_generate(result.compact)
 
-      if @options.keep
-        @tmpdir = nil
-      end
+      @tmpdir = nil if @options.keep
     end
   end
 
@@ -110,8 +284,7 @@ class EvalRunner
   end
 
   def build_router!
-    command = ["npm", "run", "build"]
-    stdout, stderr, status = Open3.capture3(*command, chdir: File.join(ROOT, "router"))
+    stdout, stderr, status = Open3.capture3("npm", "run", "build", chdir: File.join(ROOT, "router"))
     return if status.success?
 
     warn stdout unless stdout.empty?
@@ -189,46 +362,79 @@ class EvalRunner
     end
   end
 
-  def create_fixture_repos(base_dir, count)
+  def create_fixture_repos(base_dir)
     FileUtils.mkdir_p(base_dir)
-    count.times.map do |idx|
-      path = File.join(base_dir, "eval-#{idx + 1}")
+    @fixtures.map.with_index do |fixture, idx|
+      path = File.join(base_dir, format("%02d-%s", idx + 1, fixture.id))
       FileUtils.mkdir_p(path)
-      File.write(File.join(path, "README.md"), "# Relay eval #{idx + 1}\n")
+      fixture.files.each do |relative_path, content|
+        target = File.join(path, relative_path)
+        FileUtils.mkdir_p(File.dirname(target))
+        File.write(target, content)
+      end
+      write_eval_task(path, fixture)
       run_git!(path, "init", "-b", "main")
       run_git!(path, "config", "user.email", "relay-eval@example.invalid")
       run_git!(path, "config", "user.name", "Relay Eval")
       run_git!(path, "add", ".")
       run_git!(path, "commit", "-m", "initial eval fixture")
-      {
-        path: path,
-        test_command: fixture_test_command
-      }
+      { path: path, fixture: fixture }
     end
   end
 
+  def write_eval_task(path, fixture)
+    File.write(
+      File.join(path, "eval_task.json"),
+      JSON.pretty_generate(
+        id: fixture.id,
+        category: fixture.category,
+        prompt: fixture.prompt,
+        editableFiles: fixture.editable_files,
+        testCommand: fixture.test_command
+      )
+    )
+  end
+
   def register_repos(base_dir)
-    Dir.glob(File.join(base_dir, "eval-*")).sort.map do |path|
-      post_json(
+    @fixtures.map.with_index do |fixture, idx|
+      path = File.join(base_dir, format("%02d-%s", idx + 1, fixture.id))
+      repo = post_json(
         daemon_url("/repos"),
-        { path: path, testCommand: fixture_test_command },
+        { path: path, testCommand: fixture.test_command },
         auth: true
       )
+      { repo: repo, fixture: fixture }
     end
   end
 
   def run_tasks(repos)
-    repos.map.with_index do |repo, idx|
+    repos.map do |repo_spec|
+      fixture = repo_spec.fetch(:fixture)
       task = post_json(
         daemon_url("/tasks"),
         {
-          repoId: repo.fetch("id"),
-          prompt: "Low-cost eval #{idx + 1}: call the routed model and write its exact reply.",
+          repoId: repo_spec.fetch(:repo).fetch("id"),
+          prompt: "#{fixture.category}: #{fixture.prompt}",
           qualityDial: 0
         },
         auth: true
       )
-      wait_for_task(task)
+      { fixture: fixture, task: wait_for_task(task) }
+    end
+  end
+
+  def summarize_tasks(finished)
+    finished.map do |item|
+      task = item.fetch(:task)
+      fixture = item.fetch(:fixture)
+      {
+        fixture: fixture.id,
+        category: fixture.category,
+        status: task.fetch("status"),
+        testsPassed: task["testsPassed"],
+        costUsd: task["costUsd"],
+        savedUsd: task["savedUsd"]
+      }
     end
   end
 
@@ -240,10 +446,6 @@ class EvalRunner
       abort "timed out waiting for task #{task.fetch("id")}" if Time.now > deadline
       sleep 1
     end
-  end
-
-  def fixture_test_command
-    "ruby -e 'text=File.read(\"answer.txt\"); abort(\"bad answer\") unless text.include?(\"RELAY_EVAL_OK\")'"
   end
 
   def wait_for_json!(name, url)
@@ -291,6 +493,11 @@ class EvalRunner
     abort "request failed for #{url}: #{e.message}"
   end
 
+  def run_shell(command, cwd:)
+    _stdout, _stderr, status = Open3.capture3("sh", "-c", command, chdir: cwd)
+    status
+  end
+
   def run_git!(cwd, *args)
     stdout, stderr, status = Open3.capture3("git", *args, chdir: cwd)
     return if status.success?
@@ -327,20 +534,21 @@ end
 
 options = Options.new(
   real: false,
-  tasks: 3,
+  tasks: FIXTURES.length,
   keep: false,
   daemon_port: free_port,
   router_port: free_port,
   routing_config: SMOKE_ROUTING_PATH,
-  timeout_seconds: 120,
-  learn_routing: false
+  timeout_seconds: 180,
+  learn_routing: false,
+  max_tokens: 900
 )
 
 parser = OptionParser.new do |opts|
   opts.banner = "Usage: scripts/low_cost_eval.rb [--dry-run|--real] [options]"
   opts.on("--dry-run", "Validate fixture generation without network calls or token spend") { options.real = false }
   opts.on("--real", "Run real task-scoped OpenRouter calls through daemon/router") { options.real = true }
-  opts.on("--tasks N", Integer, "Number of tiny eval tasks to run (default: 3)") { |value| options.tasks = value }
+  opts.on("--tasks N", Integer, "Number of fixtures to run from the suite (default: all #{FIXTURES.length})") { |value| options.tasks = value }
   opts.on("--keep", "Keep the temporary workdir after a real run") { options.keep = true }
   opts.on("--daemon-port PORT", Integer, "Daemon port (default: random free port)") { |value| options.daemon_port = value }
   opts.on("--router-port PORT", Integer, "Router port (default: random free port)") { |value| options.router_port = value }
@@ -348,14 +556,19 @@ parser = OptionParser.new do |opts|
     options.routing_config = File.expand_path(value)
   end
   opts.on("--learn-routing", "Allow the daemon to rewrite the temp routing config during the run") { options.learn_routing = true }
-  opts.on("--timeout SECONDS", Integer, "Task polling timeout (default: 120)") { |value| options.timeout_seconds = value }
+  opts.on("--max-tokens N", Integer, "Completion cap for each model edit response (default: 900)") { |value| options.max_tokens = value }
+  opts.on("--timeout SECONDS", Integer, "Per-task polling timeout (default: 180)") { |value| options.timeout_seconds = value }
 end
 
 parser.parse!
 
 abort "--tasks must be positive" unless options.tasks.positive?
+abort "--tasks cannot exceed #{FIXTURES.length}" if options.tasks > FIXTURES.length
 abort "--timeout must be positive" unless options.timeout_seconds.positive?
+abort "--max-tokens must be positive" unless options.max_tokens.positive?
 abort "routing config not found: #{options.routing_config}" unless File.file?(options.routing_config)
 abort "agent helper not found: #{AGENT_PATH}" unless File.file?(AGENT_PATH)
+
+ENV["RELAY_EVAL_MAX_TOKENS"] = options.max_tokens.to_s
 
 EvalRunner.new(options).run
