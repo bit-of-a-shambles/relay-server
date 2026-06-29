@@ -82,6 +82,10 @@ final class DaemonController {
             let encodedCode = pairingCode.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? pairingCode
             return "relay://pair?url=\(encodedURL)&code=\(encodedCode)"
         }
+
+        func manualEntryText() -> String {
+            "Mac URL: \(daemonURL)\nPairing code: \(pairingCode)"
+        }
     }
 
     func fetchPairingPayload(

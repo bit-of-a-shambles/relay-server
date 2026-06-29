@@ -55,10 +55,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 await MainActor.run {
                     let alert = NSAlert()
                     alert.messageText = "Relay Pairing Code"
-                    alert.informativeText = payload.pairingCode
+                    alert.informativeText = "Scan the QR code or enter these details manually in the iPhone app."
                     alert.alertStyle = .informational
                     alert.accessoryView = makePairingAccessoryView(payload: payload)
-                    alert.runModal()
+                    alert.addButton(withTitle: "Done")
+                    alert.addButton(withTitle: "Copy Details")
+                    if alert.runModal() == .alertSecondButtonReturn {
+                        copyManualPairingDetails(payload)
+                    }
                 }
             } catch {
                 await MainActor.run {
@@ -118,10 +122,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hint.textColor = .secondaryLabelColor
         stack.addArrangedSubview(hint)
 
+        let manualStack = NSStackView()
+        manualStack.orientation = .vertical
+        manualStack.alignment = .leading
+        manualStack.spacing = 6
+        manualStack.translatesAutoresizingMaskIntoConstraints = false
+        manualStack.addArrangedSubview(makeSelectableTextField(title: "Mac URL", value: payload.daemonURL))
+        manualStack.addArrangedSubview(makeSelectableTextField(title: "Pairing code", value: payload.pairingCode))
+        stack.addArrangedSubview(manualStack)
+
         // NSAlert requires the accessory view to have a concrete frame
-        stack.frame = NSRect(x: 0, y: 0, width: 200, height: 210)
+        stack.frame = NSRect(x: 0, y: 0, width: 300, height: 300)
 
         return stack
+    }
+
+    private func makeSelectableTextField(title: String, value: String) -> NSView {
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 3
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        let label = NSTextField(labelWithString: title)
+        label.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
+        label.textColor = .secondaryLabelColor
+        stack.addArrangedSubview(label)
+
+        let field = NSTextField(string: value)
+        field.isEditable = false
+        field.isSelectable = true
+        field.isBezeled = true
+        field.drawsBackground = true
+        field.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        field.lineBreakMode = .byTruncatingMiddle
+        field.translatesAutoresizingMaskIntoConstraints = false
+        field.widthAnchor.constraint(equalToConstant: 280).isActive = true
+        stack.addArrangedSubview(field)
+
+        return stack
+    }
+
+    private func copyManualPairingDetails(_ payload: DaemonController.PairingPayload) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(payload.manualEntryText(), forType: .string)
     }
 
     private func makeQRCodeImage(from text: String) -> NSImage? {
