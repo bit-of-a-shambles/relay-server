@@ -89,6 +89,18 @@ final class DaemonControllerTests: XCTestCase {
         )
     }
 
+    func testPairingPayloadManualEntryTextIncludesURLAndCode() {
+        let payload = DaemonController.PairingPayload(
+            daemonURL: "http://100.101.102.103:17777",
+            pairingCode: "abc123"
+        )
+
+        XCTAssertEqual(
+            payload.manualEntryText(),
+            "Mac URL: http://100.101.102.103:17777\nPairing code: abc123"
+        )
+    }
+
     func testDecodePairingPayloadAcceptsValidPayload() throws {
         let data = Data("{\"qrPayload\":{\"url\":\"http://100.101.102.103:17777\",\"pairingCode\":\"abcd1234\"}}".utf8)
 
