@@ -20,6 +20,7 @@ import type {
 
 export type TranslationOptions = {
   model: string;
+  maxCompletionTokens?: number;
 };
 
 export function toOpenAIRequest(
@@ -40,7 +41,7 @@ export function toOpenAIRequest(
   const translated: OpenAIChatCompletionRequest = {
     model: options.model,
     messages,
-    max_tokens: request.max_tokens,
+    max_tokens: clampMaxTokens(request.max_tokens, options.maxCompletionTokens),
     stream: request.stream ?? false
   };
 
@@ -73,6 +74,14 @@ export function toOpenAIRequest(
   }
 
   return translated;
+}
+
+function clampMaxTokens(requested: number, limit: number | undefined): number {
+  if (limit === undefined || limit <= 0) {
+    return requested;
+  }
+
+  return Math.min(requested, Math.floor(limit));
 }
 
 export function fromOpenAIResponse(
