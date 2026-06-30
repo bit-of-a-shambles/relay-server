@@ -172,6 +172,18 @@ describe("Anthropic to OpenAI translation", () => {
     });
   });
 
+  it("caps max tokens when a completion budget limit is configured", () => {
+    const request: AnthropicMessagesRequest = {
+      model: "claude-sonnet-4-5",
+      max_tokens: 64_000,
+      messages: [{ role: "user", content: "Say hello" }]
+    };
+
+    expect(toOpenAIRequest(request, { model: "moonshotai/kimi-k2", maxCompletionTokens: 4096 }).max_tokens)
+      .toBe(4096);
+    expect(toOpenAIRequest(request, { model: "moonshotai/kimi-k2" }).max_tokens).toBe(64_000);
+  });
+
   it("maps tool choice any and tool result error content shapes", () => {
     const baseRequest = {
       model: "claude-sonnet-4-5",

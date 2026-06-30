@@ -25,6 +25,7 @@ export type RouterServerOptions = {
   openRouterApiKey: string | undefined;
   openRouterBaseUrl: string;
   openRouterModel: string;
+  maxCompletionTokens: number;
   routingConfigLoader: RoutingConfigLoader;
   callLogSink: CallLogSink | undefined;
   referer: string;
@@ -59,6 +60,7 @@ export function defaultOptionsFromEnv(): RouterServerOptions {
     openRouterApiKey: process.env.OPENROUTER_API_KEY,
     openRouterBaseUrl: process.env.OPENROUTER_BASE_URL ?? "https://openrouter.ai/api/v1",
     openRouterModel: process.env.OPENROUTER_MODEL ?? "moonshotai/kimi-k2",
+    maxCompletionTokens: Number.parseInt(process.env.RELAY_MAX_COMPLETION_TOKENS ?? "4096", 10),
     routingConfigLoader: createRoutingConfigLoader(process.env.RELAY_ROUTING_CONFIG),
     callLogSink: createCallLogSink({
       jsonlPath: process.env.RELAY_LLM_CALL_LOG,
@@ -266,7 +268,8 @@ async function callOpenRouter(
 ): Promise<UpstreamAttempt> {
   const startedAt = Date.now();
   const openAIRequest = toOpenAIRequest(anthropicRequest, {
-    model: route.routedModel
+    model: route.routedModel,
+    maxCompletionTokens: options.maxCompletionTokens
   });
   const response = await fetchImpl(`${trimRight(options.openRouterBaseUrl, "/")}/chat/completions`, {
     method: "POST",

@@ -728,6 +728,7 @@ async function listenRouterWithOptions(
     openRouterApiKey: "test-key",
     openRouterBaseUrl: "http://127.0.0.1:9",
     openRouterModel: "openrouter/test-model",
+    maxCompletionTokens: 4096,
     routingConfigLoader: { load: () => DEFAULT_ROUTING_CONFIG },
     referer: "relay.local",
     title: "Relay",

@@ -11,6 +11,9 @@ npm run dev
 ```
 
 Set `OPENROUTER_API_KEY` in `.env` before starting the router.
+`RELAY_MAX_COMPLETION_TOKENS` defaults to `4096`; keep it low enough that
+Claude Code's large completion ceilings do not exceed your OpenRouter credit
+budget.
 
 By default the router listens on `127.0.0.1:7778` and exposes:
 
