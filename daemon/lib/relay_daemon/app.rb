@@ -7,6 +7,7 @@ require "securerandom"
 require_relative "config"
 require_relative "db"
 require_relative "event_bus"
+require_relative "file_browser"
 require_relative "git"
 require_relative "llm_call_store"
 require_relative "bind_safety"
@@ -129,6 +130,16 @@ module RelayDaemon
     end
 
     # ----- Repos -----
+
+    get "/fs/entries" do
+      content_type :json
+
+      begin
+        JSON.generate(RelayDaemon::FileBrowser.new.list(path: params[:path].to_s))
+      rescue ArgumentError => e
+        halt 422, JSON.generate({ error: e.message })
+      end
+    end
 
     get "/repos" do
       content_type :json
