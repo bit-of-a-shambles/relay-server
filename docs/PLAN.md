@@ -4,7 +4,66 @@ You are a senior engineer building a production-quality MVP. Work in phases, ver
 
 ## Product in one sentence
 
-An iOS app that lets a developer launch, monitor, and approve coding-agent tasks running on their own Mac, where every model call is transparently routed through a cost-optimizing proxy (cheap open-weight models by default, frontier models on escalation), with per-task cost and outcome tracking.
+An iOS app that gives a developer a remote, continuous chat with a coding
+agent running on their own Mac repo — closer to Codex than to a task queue —
+where every model call is transparently routed through a cost-optimizing
+proxy (cheap open-weight models by default, frontier models on escalation),
+with per-session cost and outcome tracking, and where review/merge is a
+checkpoint action inside the conversation rather than the end of every turn.
+
+## Architecture model (2026-06-30 revision)
+
+> **This supersedes the original "create task → wait → review → done" model
+> described lower in this doc and reflected in the current `tasks`-table
+> implementation.** The implementation has not been migrated yet; see
+> [docs/AGENT_PLAYBOOK.md](docs/AGENT_PLAYBOOK.md) Track G for the migration
+> milestones and [docs/STATUS.md](docs/STATUS.md) for current status.
+
+Relay is a **remote chat UI for a local Mac coding agent**. The core
+primitive is a **chat session** scoped to a repo, not a one-shot task:
+
+1. **Pick a repo on the Mac.** The iOS app browses/selects a repo the daemon
+   already knows about (or registers a new one). All work happens on that
+   Mac's filesystem.
+2. **Open a continuous chat.** The app creates or resumes a chat session for
+   that repo. A session is long-lived: it is not "create task, wait, review,
+   done" for every message — it is one running conversation the user returns
+   to.
+3. **Send messages into the same agent session.** Each user message
+   continues the conversation. The agent retains context: prior turns, files
+   it inspected, and previous changes in that session. This requires the
+   underlying agent CLI process to be resumable/continuable per session
+   (e.g. Claude Code's session-resume support), not re-spawned fresh per
+   message.
+4. **Stream back assistant/tool output as a timeline.** iOS shows a normal
+   chat timeline: user messages, assistant responses, tool calls/output,
+   file edits, errors, and test output, in order, per session — not a single
+   collapsed task-result screen.
+5. **Model routing happens underneath, unchanged in spirit.** The router
+   still intercepts model calls and chooses cheap/better models unless the
+   user overrides the model for that session/message. The eval toggle
+   controls whether that session/message contributes to learned routing.
+   Attribution moves from `task_id` to a session/message identity (see Track
+   G in the playbook).
+6. **Code changes stay local until reviewed.** The agent works in the Mac
+   repo, on a session-scoped branch/worktree (this part is unchanged from the
+   current implementation). Review/approve is a **checkpoint/merge action
+   the user can take at any point in the session**, not something that
+   automatically happens at the end of every chat turn.
+7. **Tests/diffs are session actions, not lifecycle stages.** The user can
+   ask the agent (in chat) to run tests, or tap explicit "run tests" / "review
+   diff" controls. The app exposes the session's *current* diff and test
+   state at any time, which can be queried repeatedly as the conversation
+   continues — diffs and test runs are not a one-time end-of-task event.
+
+The backend's core primitive shifts from `tasks` (one-shot, terminal status)
+to **chat sessions + messages + local workspace state**, with
+review/merge/test as session-level actions a user can invoke at any point,
+any number of times, rather than a single terminal step per task. The
+sections below (data model, REST/WS contract, iOS screens) describe the
+**original task-based MVP that is currently implemented**; treat them as
+history/reference until Track G's migration lands, at which point this file
+should be rewritten in place rather than left with two competing models.
 
 ## What we are NOT building (MVP non-goals)
 
@@ -122,6 +181,18 @@ Status as of 2026-06-12: router-side routing rules, quality dial handling, retry
 
 **Phase 5 (optional) - macOS menu-bar wrapper.** Status item: daemon on/off, QR pairing window, link to logs.
 
+Status as of 2026-06-24: Phases 1-5 are complete and accepted (see
+[STATUS.md](STATUS.md)).
+
+**Phase 6 - Chat-session architecture pivot.** Replace the task-as-primitive
+model above with chat sessions + messages + local workspace state, per
+"Architecture model (2026-06-30 revision)" earlier in this doc. Accept: a
+user can open one chat session for a repo, send multiple messages that share
+agent context/history, see a running timeline, and invoke diff/test/approve
+as session actions at any point without the session ending. Tracked
+milestone-by-milestone as Track G in
+[AGENT_PLAYBOOK.md](AGENT_PLAYBOOK.md).
+
 ## Engineering standards
 
 - TypeScript: strict mode, vitest, no `any` in router translation code.
@@ -133,4 +204,9 @@ Status as of 2026-06-12: router-side routing rules, quality dial handling, retry
 
 ## Current instruction
 
-Continue from [STATUS.md](STATUS.md). Close the real OpenRouter smoke once `OPENROUTER_API_KEY` is configured, then start the Ruby + Sorbet daemon.
+Continue from [STATUS.md](STATUS.md) and [AGENT_PLAYBOOK.md](AGENT_PLAYBOOK.md)
+Track G. The original task-based MVP (Phases 1-5 above) is complete and
+working; the next body of work is the architecture pivot described in
+"Architecture model (2026-06-30 revision)" above — migrating the `tasks`
+primitive to chat sessions + messages, one playbook milestone at a time, per
+The Loop in [AGENTS.md](../AGENTS.md).
