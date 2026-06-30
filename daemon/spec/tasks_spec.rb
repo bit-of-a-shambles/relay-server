@@ -109,6 +109,15 @@ RSpec.describe "Tasks API" do
       expect(File.read(base_file)).to eq("http://127.0.0.1:7778/api/task/#{task_id}")
     end
 
+    it "passes a selected model to the agent command" do
+      post_task("modelOverride" => "deepseek/deepseek-chat")
+      task_id = JSON.parse(last_response.body)["id"]
+      wait_for_task(task_id)
+
+      argv_file = File.join(worktrees_dir, task_id, "agent_argv.txt")
+      expect(File.read(argv_file).split("\n")).to include("--model", "deepseek/deepseek-chat")
+    end
+
     it "writes the learned routing config after a task finishes when configured" do
       routing_path = File.join(Dir.mktmpdir, "config", "routing.json")
       RelayDaemon::App.set(:relay_config, RelayDaemon::Config.new(
@@ -127,6 +136,21 @@ RSpec.describe "Tasks API" do
       expect(File.exist?(routing_path)).to be true
       parsed = JSON.parse(File.read(routing_path))
       expect(parsed["tiers"]["1"]).to eq(["moonshotai/kimi-k2", "deepseek/deepseek-chat"])
+    end
+
+    it "does not write the learned routing config when learning is disabled for the task" do
+      routing_path = File.join(Dir.mktmpdir, "config", "routing.json")
+      RelayDaemon::App.set(:relay_config, RelayDaemon::Config.new(
+        daemon_token: token, host: "127.0.0.1", port: 7777, db_path: db_path,
+        worktrees_dir: worktrees_dir, agent_log_dir: agent_log_dir,
+        agent_command: agent_cmd, routing_config_path: routing_path
+      ))
+      post_task("learnFromOutcome" => false)
+      task_id = JSON.parse(last_response.body)["id"]
+      wait_for_task(task_id)
+
+      sleep 0.1
+      expect(File.exist?(routing_path)).to be false
     end
 
     it "leaves testsPassed null when the repo has no testCommand" do
@@ -216,6 +240,20 @@ RSpec.describe "Tasks API" do
     it "returns 422 when qualityDial is negative" do
       post "/tasks",
            { repoId: repo["id"], prompt: "x", qualityDial: -1 }.to_json,
+           { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+      expect(last_response.status).to eq(422)
+    end
+
+    it "returns 422 when modelOverride is empty" do
+      post "/tasks",
+           { repoId: repo["id"], prompt: "x", qualityDial: 5, modelOverride: "" }.to_json,
+           { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+      expect(last_response.status).to eq(422)
+    end
+
+    it "returns 422 when learnFromOutcome is not boolean" do
+      post "/tasks",
+           { repoId: repo["id"], prompt: "x", qualityDial: 5, learnFromOutcome: "false" }.to_json,
            { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
       expect(last_response.status).to eq(422)
     end

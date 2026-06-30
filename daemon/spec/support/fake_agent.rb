@@ -5,6 +5,7 @@
 # Exit code = ARGV[1].to_i (default 0). ARGV[0] is the prompt.
 puts "agent line one"
 puts "agent line two"
+File.write("agent_argv.txt", ARGV.join("\n"))
 File.write("agent_ran.txt", ARGV[0].to_s)
 File.write("env_task_id.txt", ENV["RELAY_TASK_ID"].to_s)
 File.write("env_anthropic_base.txt", ENV["ANTHROPIC_BASE_URL"].to_s)

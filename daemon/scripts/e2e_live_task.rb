@@ -6,9 +6,12 @@ require "net/http"
 require "uri"
 
 BASE_URL = ENV.fetch("RELAY_E2E_BASE_URL", "http://127.0.0.1:17777")
+TOKEN = ENV["RELAY_E2E_TOKEN"]
 REPO_PATH = File.expand_path(ENV.fetch("RELAY_E2E_REPO_PATH", File.expand_path("../..", __dir__)))
 PROMPT = ENV.fetch("RELAY_E2E_PROMPT", "Hello")
 QUALITY_DIAL = Integer(ENV.fetch("RELAY_E2E_QUALITY_DIAL", "5"))
+MODEL_OVERRIDE = ENV["RELAY_E2E_MODEL_OVERRIDE"]
+LEARN_FROM_OUTCOME = ENV.fetch("RELAY_E2E_LEARN_FROM_OUTCOME", "true") == "true"
 TEST_COMMAND = ENV.fetch("RELAY_E2E_TEST_COMMAND", "echo ok")
 TIMEOUT_SECONDS = Integer(ENV.fetch("RELAY_E2E_TIMEOUT_SECONDS", "180"))
 
@@ -71,13 +74,17 @@ def wait_for_terminal_task(token, task_id)
   end
 end
 
-token = claim_token
+token = TOKEN || claim_token
 repo = ensure_repo(token)
-status, task = request(:post, "/tasks", token: token, body: {
+task_body = {
   repoId: repo.fetch("id"),
   prompt: PROMPT,
-  qualityDial: QUALITY_DIAL
-})
+  qualityDial: QUALITY_DIAL,
+  learnFromOutcome: LEARN_FROM_OUTCOME
+}
+task_body[:modelOverride] = MODEL_OVERRIDE if MODEL_OVERRIDE && !MODEL_OVERRIDE.empty?
+
+status, task = request(:post, "/tasks", token: token, body: task_body)
 task = expect_success!(status, task, "create task")
 
 finished = wait_for_terminal_task(token, task.fetch("id"))

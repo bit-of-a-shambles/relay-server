@@ -79,6 +79,14 @@ describe("routing", () => {
   });
 
   it("selects tiers using requested model, prompt size, dial, clamping, and escalation", () => {
+    expect(
+      chooseRoute(request({ model: "deepseek/deepseek-chat" }), DEFAULT_ROUTING_CONFIG)
+    ).toMatchObject({
+      tier: 1,
+      requestedModel: "deepseek/deepseek-chat",
+      routedModel: "deepseek/deepseek-chat"
+    });
+
     expect(chooseRoute(request({ model: "claude-haiku" }), DEFAULT_ROUTING_CONFIG)).toMatchObject({
       tier: 0,
       routedModel: "qwen/qwen3-coder-small"
