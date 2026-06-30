@@ -83,6 +83,19 @@ export function chooseRoute(
 ): RoutingDecision {
   const promptTokens = estimatePromptTokens(request);
   const qualityDial = readQualityDial(request.metadata, config.qualityDial.default);
+  const requestedTier = findExactModelTier(request.model, config);
+  if (requestedTier !== null) {
+    return {
+      requestedModel: request.model,
+      routedModel: request.model,
+      tier: requestedTier,
+      promptTokens,
+      qualityDial,
+      frontierModel: config.frontierModel,
+      escalationReason
+    };
+  }
+
   const baseTier = findBaseTier(request.model, promptTokens, config.rules);
   const tier = clampTier(
     baseTier + Math.round((qualityDial - 5) / 3) + (escalationReason === null ? 0 : 1),
@@ -217,6 +230,15 @@ function findBaseTier(model: string, promptTokens: number, rules: RoutingRule[])
   }
 
   throw new Error("Routing config requires a default rule");
+}
+
+function findExactModelTier(model: string, config: Pick<RoutingConfig, "tiers">): number | null {
+  for (const [tier, models] of Object.entries(config.tiers)) {
+    if (models.includes(model)) {
+      return Number(tier);
+    }
+  }
+  return null;
 }
 
 function estimatePromptTokens(request: AnthropicMessagesRequest): number {

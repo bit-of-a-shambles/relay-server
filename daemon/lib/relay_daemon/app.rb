@@ -249,11 +249,15 @@ module RelayDaemon
       repo_id      = data["repoId"]
       prompt       = data["prompt"]
       quality_dial = data["qualityDial"]
+      model_override = data["modelOverride"]
+      learn_from_outcome = data.key?("learnFromOutcome") ? data["learnFromOutcome"] : true
 
       unless repo_id.is_a?(Integer) &&
              prompt.is_a?(String) && !prompt.empty? &&
-             quality_dial.is_a?(Integer) && quality_dial >= 0 && quality_dial <= 10
-        halt 422, JSON.generate({ error: "repoId (integer), prompt (non-empty string), qualityDial (0–10 integer) required" })
+             quality_dial.is_a?(Integer) && quality_dial >= 0 && quality_dial <= 10 &&
+             (model_override.nil? || (model_override.is_a?(String) && !model_override.empty?)) &&
+             (learn_from_outcome == true || learn_from_outcome == false)
+        halt 422, JSON.generate({ error: "repoId (integer), prompt (non-empty string), qualityDial (0–10 integer), optional modelOverride, optional learnFromOutcome required" })
       end
 
       repo_store = settings.repo_store
@@ -290,6 +294,7 @@ module RelayDaemon
 
       git.worktree_add(worktree_path, branch: branch)
       agent_argv = RelayDaemon::TaskRunner.build_argv(agent_command, prompt)
+      agent_argv += ["--model", model_override] if model_override
       RelayDaemon::TaskRunner.run_async(
         task_id:      task_id,
         worktree_path: worktree_path,
@@ -304,7 +309,7 @@ module RelayDaemon
           # and stamps it on every call record, joining calls to test outcomes.
           "ANTHROPIC_BASE_URL" => "#{cfg.router_base_url}/task/#{task_id}"
         },
-        routing_config_path: cfg.routing_config_path
+        routing_config_path: learn_from_outcome ? cfg.routing_config_path : nil
       )
 
       status 201
