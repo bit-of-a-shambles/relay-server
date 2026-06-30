@@ -341,6 +341,20 @@ module RelayDaemon
       JSON.generate(task)
     end
 
+    get "/tasks/:id/log" do
+      content_type :json
+
+      t_store = settings.task_store
+      halt 503, JSON.generate({ error: "task store not configured" }) if t_store.nil?
+
+      task = t_store.find(params[:id])
+      halt 404, JSON.generate({ error: "not found" }) if task.nil?
+
+      log_path = File.join(settings.relay_config.agent_log_dir, task["id"], "agent.log")
+      lines = File.exist?(log_path) ? File.readlines(log_path, chomp: true) : []
+      JSON.generate({ "lines" => lines })
+    end
+
     post "/tasks/:id/approve" do
       content_type :json
 

@@ -299,6 +299,55 @@ RSpec.describe "Tasks API" do
     end
   end
 
+  describe "GET /tasks/:id/log" do
+    it "returns captured task log lines" do
+      echo_repo = repo_store.create(path: make_git_dir, test_command: "echo TEST_OUTPUT_MARKER")
+      post "/tasks",
+           { repoId: echo_repo["id"], prompt: "do the thing", qualityDial: 5 }.to_json,
+           { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+      task_id = JSON.parse(last_response.body)["id"]
+      wait_for_task(task_id)
+
+      get "/tasks/#{task_id}/log", {}, auth_headers
+
+      expect(last_response.status).to eq(200)
+      body = JSON.parse(last_response.body)
+      expect(body["lines"]).to include("agent line one", "agent line two", "TEST_OUTPUT_MARKER")
+    end
+
+    it "returns an empty line list when a task has no log yet" do
+      task = task_store.create(
+        repo_id: repo["id"], prompt: "pending", quality_dial: 5,
+        branch: "relay/no-log", base_commit: "abc", base_branch: "main"
+      )
+
+      get "/tasks/#{task["id"]}/log", {}, auth_headers
+
+      expect(last_response.status).to eq(200)
+      expect(JSON.parse(last_response.body)).to eq("lines" => [])
+    end
+
+    it "returns 404 for unknown task id" do
+      get "/tasks/00000000-0000-0000-0000-000000000000/log", {}, auth_headers
+
+      expect(last_response.status).to eq(404)
+    end
+
+    it "returns 401 without token" do
+      get "/tasks/any-id/log"
+
+      expect(last_response.status).to eq(401)
+    end
+
+    it "returns 503 when task_store is not configured" do
+      RelayDaemon::App.set(:task_store, nil)
+
+      get "/tasks/any-id/log", {}, auth_headers
+
+      expect(last_response.status).to eq(503)
+    end
+  end
+
   # ----- GET /tasks -----
 
   describe "GET /tasks" do
