@@ -30,7 +30,7 @@ module RelayDaemon
           content: String,
           worktree_path: String,
           sessions_log_dir: String,
-          agent_command: String,
+          agent_command: T.any(String, T::Array[String]),
           db_path: String,
           event_bus: EventBus,
           agent_env: T::Hash[String, String],
@@ -76,7 +76,7 @@ module RelayDaemon
           content: String,
           worktree_path: String,
           sessions_log_dir: String,
-          agent_command: String,
+          agent_command: T.any(String, T::Array[String]),
           db_path: String,
           event_bus: EventBus,
           agent_env: T::Hash[String, String],
@@ -100,7 +100,7 @@ module RelayDaemon
         run_dir = File.join(sessions_log_dir, session_id, "runs")
         FileUtils.mkdir_p(run_dir)
         log_path = File.join(run_dir, "#{run_id}.log")
-        argv = build_argv(agent_command, content, session_id: session_id, resume: resume)
+        argv = agent_command.is_a?(Array) ? agent_command : build_argv(agent_command, content, session_id: session_id, resume: resume)
         run_env = agent_env.merge("RELAY_SESSION_ID" => session_id)
         if router_base_url
           run_env["ANTHROPIC_BASE_URL"] = "#{router_base_url.delete_suffix("/")}/session/#{session_id}"

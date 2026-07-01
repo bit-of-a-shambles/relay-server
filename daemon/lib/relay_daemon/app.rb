@@ -15,6 +15,7 @@ require_relative "bind_safety"
 require_relative "pairing_service"
 require_relative "repo_store"
 require_relative "eval_store"
+require_relative "routing_config_writer"
 require_relative "stats"
 require_relative "session_runner"
 require_relative "session_store"
@@ -299,8 +300,11 @@ module RelayDaemon
       end
 
       content = data["content"] if data.is_a?(Hash)
-      unless content.is_a?(String) && !content.empty?
-        halt 422, JSON.generate({ error: "content is required" })
+      model_override = data["modelOverride"] if data.is_a?(Hash)
+      unless data.is_a?(Hash) &&
+             content.is_a?(String) && !content.empty? &&
+             (model_override.nil? || (model_override.is_a?(String) && !model_override.empty?))
+        halt 422, JSON.generate({ error: "content (non-empty string) and optional modelOverride required" })
       end
 
       session = session_store.find(params[:id])
@@ -322,12 +326,15 @@ module RelayDaemon
         payload: { "sessionId" => session["id"], "message" => message }
       )
 
+      agent_argv = RelayDaemon::SessionRunner.build_argv(agent_command, content, session_id: session["id"], resume: resume)
+      agent_argv += ["--model", model_override] if model_override
+
       RelayDaemon::SessionRunner.run_async(
         session_id: session["id"],
         content: content,
         worktree_path: File.join(settings.relay_config.worktrees_dir, session["id"]),
         sessions_log_dir: File.join(settings.relay_config.agent_log_dir, "sessions"),
-        agent_command: agent_command,
+        agent_command: agent_argv,
         db_path: settings.relay_config.db_path,
         event_bus: settings.event_bus,
         router_base_url: settings.relay_config.router_base_url,
@@ -365,11 +372,29 @@ module RelayDaemon
       repo = repo_store.find(session["repoId"])
       halt 422, JSON.generate({ error: "repo not found" }) if repo.nil?
 
+      body_str = request.body.read
+      data = if body_str.empty?
+               {}
+             else
+               begin
+                 JSON.parse(body_str)
+               rescue JSON::ParserError
+                 halt 400, JSON.generate({ error: "invalid JSON" })
+               end
+             end
+      unless data.is_a?(Hash)
+        halt 400, JSON.generate({ error: "body must be a JSON object" })
+      end
+      learn_from_outcome = data.key?("learnFromOutcome") ? data["learnFromOutcome"] : true
+      unless learn_from_outcome == true || learn_from_outcome == false
+        halt 422, JSON.generate({ error: "learnFromOutcome must be boolean" })
+      end
+
       test_command = repo["testCommand"]
       test_store = RelayDaemon::SessionTestStore.new(db, session_store)
       if test_command.nil? || test_command.empty?
         test_store.record(session_id: session["id"], tests_passed: nil)
-        JSON.generate({ "testsPassed" => nil })
+        result = { "testsPassed" => nil }
       else
         log_path = File.join(settings.relay_config.agent_log_dir, "sessions", session["id"], "test.log")
         FileUtils.mkdir_p(File.dirname(log_path))
@@ -378,8 +403,12 @@ module RelayDaemon
         _, test_status = Process.wait2(pid)
         tests_passed = test_status.success?
         test_store.record(session_id: session["id"], tests_passed: tests_passed)
-        JSON.generate({ "testsPassed" => tests_passed })
+        result = { "testsPassed" => tests_passed }
       end
+      if learn_from_outcome && settings.relay_config.routing_config_path
+        RelayDaemon::RoutingConfigWriter.new(RelayDaemon::EvalStore.new(db)).write!(settings.relay_config.routing_config_path)
+      end
+      JSON.generate(result)
     end
 
     post "/sessions/:id/approve" do
