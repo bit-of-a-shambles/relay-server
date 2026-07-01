@@ -20,7 +20,7 @@ RSpec.describe RelayDaemon::Db do
   describe "schema after first open" do
     it "creates all required tables" do
       expect(table_names(db)).to include(
-        "repos", "tasks", "llm_calls", "schema_migrations"
+        "repos", "tasks", "llm_calls", "chat_sessions", "messages", "schema_migrations"
       )
     end
 
@@ -28,7 +28,11 @@ RSpec.describe RelayDaemon::Db do
       versions = db.connection
                    .execute("SELECT version FROM schema_migrations ORDER BY version")
                    .map { |r| r["version"] }
-      expect(versions).to include("001_initial_schema", "002_add_base_commit")
+      expect(versions).to include(
+        "001_initial_schema",
+        "002_add_base_commit",
+        "006_chat_sessions"
+      )
     end
 
     it "repos table has the expected columns" do
@@ -57,6 +61,25 @@ RSpec.describe RelayDaemon::Db do
         "id", "task_id", "requested_model", "routed_model", "tier",
         "prompt_tokens", "completion_tokens", "cost_usd", "frontier_cost_usd",
         "latency_ms", "escalation_reason", "status", "error_message", "created_at"
+      )
+    end
+
+    it "chat_sessions table has the expected columns" do
+      cols = db.connection
+               .execute("PRAGMA table_info(chat_sessions)")
+               .map { |r| r["name"] }
+      expect(cols).to include(
+        "id", "repo_id", "branch", "base_commit", "status", "created_at",
+        "last_message_at"
+      )
+    end
+
+    it "messages table has the expected columns" do
+      cols = db.connection
+               .execute("PRAGMA table_info(messages)")
+               .map { |r| r["name"] }
+      expect(cols).to include(
+        "id", "session_id", "role", "content", "created_at", "agent_run_id"
       )
     end
   end
