@@ -5,6 +5,8 @@ prompt = ARGV[0].to_s
 mode_index = ARGV.index("--resume") || ARGV.index("--session-id")
 mode = mode_index ? ARGV[mode_index].delete_prefix("--") : "none"
 token = mode_index ? ARGV[mode_index + 1].to_s : ""
+model_index = ARGV.index("--model")
+model = model_index ? ARGV[model_index + 1].to_s : ""
 
 sleep 0.2 if prompt.include?("slow")
 
@@ -17,3 +19,4 @@ File.write("env_anthropic_base.txt", ENV["ANTHROPIC_BASE_URL"].to_s)
 puts "mode=#{mode}"
 puts "token=#{token}"
 puts "prompt=#{prompt}"
+puts "model=#{model}" unless model.empty?

@@ -25,6 +25,7 @@ RSpec.describe "Sessions API" do
   let(:token) { "sessions-test-token" }
   let(:worktrees_dir) { Dir.mktmpdir }
   let(:agent_log_dir) { Dir.mktmpdir }
+  let(:routing_config_path) { File.join(Dir.mktmpdir, "routing.json") }
 
   let(:git_dir) do
     dir = make_git_dir
@@ -43,7 +44,8 @@ RSpec.describe "Sessions API" do
     RelayDaemon::App.set(:relay_config, RelayDaemon::Config.new(
       daemon_token: token, host: "127.0.0.1", port: 7777, db_path: db_path,
       worktrees_dir: worktrees_dir, agent_log_dir: agent_log_dir,
-      agent_command: "ruby #{SESSION_AGENT} {prompt}"
+      agent_command: "ruby #{SESSION_AGENT} {prompt}",
+      routing_config_path: routing_config_path
     ))
     RelayDaemon::App.set(:repo_store, repo_store)
     RelayDaemon::App.set(:session_store, session_store)
@@ -162,6 +164,18 @@ RSpec.describe "Sessions API" do
       expect(messages.last["content"]).to include("mode=resume", "prompt=message 1")
     end
 
+    it "passes the optional model override to the session agent" do
+      session = create_session
+
+      post "/sessions/#{session["id"]}/messages",
+           { content: "hello", modelOverride: "deepseek/deepseek-chat" }.to_json,
+           { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+      expect(last_response.status).to eq(202)
+
+      messages = wait_for_messages(session["id"], 2)
+      expect(messages.last["content"]).to include("model=deepseek/deepseek-chat")
+    end
+
     it "returns validation and not-found errors" do
       session = create_session
 
@@ -177,6 +191,10 @@ RSpec.describe "Sessions API" do
       expect(last_response.status).to eq(422)
 
       post "/sessions/#{session["id"]}/messages", [].to_json,
+           { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+      expect(last_response.status).to eq(422)
+
+      post "/sessions/#{session["id"]}/messages", { content: "x", modelOverride: "" }.to_json,
            { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
       expect(last_response.status).to eq(422)
 
@@ -261,6 +279,18 @@ RSpec.describe "Sessions API" do
       expect(JSON.parse(last_response.body)["testsPassed"]).to be false
     end
 
+    it "does not refresh learned routing when learnFromOutcome is false" do
+      session = create_session
+      File.write(routing_config_path, "unchanged")
+
+      post "/sessions/#{session["id"]}/test",
+           { learnFromOutcome: false }.to_json,
+           { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+
+      expect(last_response.status).to eq(200)
+      expect(File.read(routing_config_path)).to eq("unchanged")
+    end
+
     it "returns action errors" do
       get "/sessions/missing/diff", {}, auth_headers
       expect(last_response.status).to eq(404)
@@ -270,6 +300,16 @@ RSpec.describe "Sessions API" do
       expect(last_response.status).to eq(404)
 
       session = create_session
+      post "/sessions/#{session["id"]}/test", "not json",
+           { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+      expect(last_response.status).to eq(400)
+      post "/sessions/#{session["id"]}/test", [].to_json,
+           { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+      expect(last_response.status).to eq(400)
+      post "/sessions/#{session["id"]}/test", { learnFromOutcome: "false" }.to_json,
+           { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+      expect(last_response.status).to eq(422)
+
       RelayDaemon::App.set(:session_store, nil)
       get "/sessions/#{session["id"]}/diff", {}, auth_headers
       expect(last_response.status).to eq(503)
