@@ -178,6 +178,7 @@ describe("call log sinks", () => {
       const sink = new JsonlCallLogSink(path);
       sink.record({
         taskId: null,
+        sessionId: null,
         requestedModel: "requested",
         routedModel: "routed",
         tier: 1,
@@ -241,6 +242,7 @@ describe("call log sinks", () => {
 
 const sampleRecord: LlmCallRecord = {
   taskId: "task-1",
+  sessionId: null,
   requestedModel: "claude-haiku",
   routedModel: "moonshotai/kimi-k2",
   tier: 1,

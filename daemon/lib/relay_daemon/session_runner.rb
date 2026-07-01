@@ -34,12 +34,13 @@ module RelayDaemon
           db_path: String,
           event_bus: EventBus,
           agent_env: T::Hash[String, String],
+          router_base_url: T.nilable(String),
           run_id: T.nilable(String),
           append_user: T::Boolean,
           resume: T.nilable(T::Boolean)
         ).returns(Thread)
       end
-      def run_async(session_id:, content:, worktree_path:, sessions_log_dir:, agent_command:, db_path:, event_bus:, agent_env: {}, run_id: nil, append_user: true, resume: nil)
+      def run_async(session_id:, content:, worktree_path:, sessions_log_dir:, agent_command:, db_path:, event_bus:, agent_env: {}, router_base_url: nil, run_id: nil, append_user: true, resume: nil)
         Thread.new do
           lock_for(session_id).synchronize do
             run_once(
@@ -51,6 +52,7 @@ module RelayDaemon
               db_path: db_path,
               event_bus: event_bus,
               agent_env: agent_env,
+              router_base_url: router_base_url,
               run_id: run_id,
               append_user: append_user,
               resume: resume
@@ -78,12 +80,13 @@ module RelayDaemon
           db_path: String,
           event_bus: EventBus,
           agent_env: T::Hash[String, String],
+          router_base_url: T.nilable(String),
           run_id: T.nilable(String),
           append_user: T::Boolean,
           resume: T.nilable(T::Boolean)
         ).void
       end
-      def run_once(session_id:, content:, worktree_path:, sessions_log_dir:, agent_command:, db_path:, event_bus:, agent_env:, run_id:, append_user:, resume:)
+      def run_once(session_id:, content:, worktree_path:, sessions_log_dir:, agent_command:, db_path:, event_bus:, agent_env:, router_base_url:, run_id:, append_user:, resume:)
         run_id ||= SecureRandom.uuid
         db = Db.new(db_path)
         session_store = SessionStore.new(db)
@@ -98,10 +101,14 @@ module RelayDaemon
         FileUtils.mkdir_p(run_dir)
         log_path = File.join(run_dir, "#{run_id}.log")
         argv = build_argv(agent_command, content, session_id: session_id, resume: resume)
+        run_env = agent_env.merge("RELAY_SESSION_ID" => session_id)
+        if router_base_url
+          run_env["ANTHROPIC_BASE_URL"] = "#{router_base_url.delete_suffix("/")}/session/#{session_id}"
+        end
 
         lines = []
         reader, writer = IO.pipe
-        pid = Process.spawn(agent_env, *argv, out: writer, err: writer, chdir: worktree_path)
+        pid = Process.spawn(run_env, *argv, out: writer, err: writer, chdir: worktree_path)
         writer.close
 
         File.open(log_path, "w") do |log|

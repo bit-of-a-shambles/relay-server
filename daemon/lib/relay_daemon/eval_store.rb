@@ -6,8 +6,8 @@ require_relative "db"
 
 module RelayDaemon
   # Reads the proprietary eval dataset: every routed model call joined to the
-  # task whose tests verify it — the (model × task → tests-passed) signal the
-  # cost router learns from. Sources the `eval_dataset` view (migration 005).
+  # task or chat session whose tests verify it. For sessions, a call is
+  # attributed to the first session test run recorded after the call.
   class EvalStore
     extend T::Sig
 
@@ -18,16 +18,16 @@ module RelayDaemon
 
     # Per routed-model rollup of test-verified outcomes. Outcome-verified routing
     # uses this to prefer the cheapest model that historically passes tests.
-    # `passRate` is approved-by-tests over tasks that actually ran tests (nil
-    # when none did), counted over distinct tasks (a task may make many calls).
+    # `passRate` is approved-by-tests over outcomes that actually ran tests
+    # (nil when none did), counted over distinct tasks/sessions.
     sig { returns(T::Array[T::Hash[Symbol, T.untyped]]) }
     def model_outcomes
       sql = <<~SQL
         SELECT routed_model                                                        AS model,
                COUNT(*)                                                            AS calls,
-               COUNT(DISTINCT task_id)                                             AS tasks,
-               COUNT(DISTINCT CASE WHEN tests_passed IS NOT NULL THEN task_id END) AS tasks_with_tests,
-               COUNT(DISTINCT CASE WHEN tests_passed = 1 THEN task_id END)         AS tasks_passed,
+               COUNT(DISTINCT outcome_id)                                          AS tasks,
+               COUNT(DISTINCT CASE WHEN tests_passed IS NOT NULL THEN outcome_id END) AS tasks_with_tests,
+               COUNT(DISTINCT CASE WHEN tests_passed = 1 THEN outcome_id END)      AS tasks_passed,
                COALESCE(SUM(COALESCE(cost_usd, 0)), 0)                             AS spend_usd
         FROM eval_dataset
         GROUP BY routed_model

@@ -54,6 +54,37 @@ RSpec.describe RelayDaemon::SessionStore do
   end
 end
 
+RSpec.describe RelayDaemon::SessionTestStore do
+  let(:db_path) { File.join(Dir.mktmpdir, "test.sqlite3") }
+  let(:db) { RelayDaemon::Db.new(db_path) }
+  let(:repo_store) { RelayDaemon::RepoStore.new(db) }
+  let(:session_store) { RelayDaemon::SessionStore.new(db) }
+  let(:test_store) { described_class.new(db, session_store) }
+  let(:repo) { repo_store.create(path: make_git_dir) }
+  let(:session) { session_store.create(repo: repo, worktrees_dir: Dir.mktmpdir, id: "test-session") }
+
+  after { db.connection.close }
+
+  it "records passed, failed, and unconfigured session test results" do
+    expect(test_store.record(session_id: session["id"], tests_passed: true))
+      .to include("sessionId" => session["id"], "testsPassed" => true)
+    expect(test_store.record(session_id: session["id"], tests_passed: false)["testsPassed"])
+      .to be false
+    expect(test_store.record(session_id: session["id"], tests_passed: nil)["testsPassed"])
+      .to be_nil
+  end
+
+  it "raises when recording a result for an unknown session" do
+    expect do
+      test_store.record(session_id: "missing", tests_passed: true)
+    end.to raise_error(ArgumentError, "session not found")
+  end
+
+  it "returns nil for an unknown test run" do
+    expect(test_store.find(123_456)).to be_nil
+  end
+end
+
 RSpec.describe RelayDaemon::MessageStore do
   let(:db_path) { File.join(Dir.mktmpdir, "test.sqlite3") }
   let(:db) { RelayDaemon::Db.new(db_path) }

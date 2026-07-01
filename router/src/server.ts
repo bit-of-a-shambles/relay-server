@@ -97,7 +97,7 @@ async function handleRequest(
     });
     return;
   }
-  const taskId = messagesRoute.taskId;
+  const attribution = messagesRoute;
 
   if (options.openRouterApiKey === undefined || options.openRouterApiKey.length === 0) {
     sendJson(response, 500, {
@@ -125,7 +125,7 @@ async function handleRequest(
 
     if (!upstreamResponse.response.ok) {
       const errorMessage = await readUpstreamError(upstreamResponse.response);
-      await recordCall(options.callLogSink, route, latencyMs, 0, null, "error", errorMessage, taskId);
+      await recordCall(options.callLogSink, route, latencyMs, 0, null, "error", errorMessage, attribution);
       sendJson(response, upstreamResponse.response.status, {
         type: "error",
         error: {
@@ -136,7 +136,7 @@ async function handleRequest(
       return;
     }
 
-    await recordCall(options.callLogSink, route, latencyMs, 0, null, "success", null, taskId);
+    await recordCall(options.callLogSink, route, latencyMs, 0, null, "success", null, attribution);
 
     if (upstreamResponse.response.body === null) {
       sendJson(response, 502, {
@@ -171,7 +171,7 @@ async function handleRequest(
     route,
     options,
     fetchImpl,
-    taskId
+    attribution
   );
 
   if (result.response === undefined) {
@@ -205,12 +205,17 @@ type NonStreamingResult =
       errorMessage: string;
     };
 
+type CallAttribution = {
+  taskId: string | null;
+  sessionId: string | null;
+};
+
 async function executeNonStreamingWithRetry(
   anthropicRequest: AnthropicMessagesRequest,
   initialRoute: RoutingDecision,
   options: RouterServerOptions,
   fetchImpl: typeof fetch,
-  taskId: string | null
+  attribution: CallAttribution
 ): Promise<NonStreamingResult> {
   const attempts = [
     initialRoute,
@@ -231,7 +236,7 @@ async function executeNonStreamingWithRetry(
       const errorMessage = await readUpstreamError(attempt.response);
       lastStatus = attempt.response.status;
       lastError = errorMessage;
-      await recordCall(options.callLogSink, route, latencyMs, 0, null, "error", errorMessage, taskId);
+      await recordCall(options.callLogSink, route, latencyMs, 0, null, "error", errorMessage, attribution);
       continue;
     }
 
@@ -247,13 +252,13 @@ async function executeNonStreamingWithRetry(
         extractOpenRouterCostUsd(upstreamJson),
         "success",
         null,
-        taskId
+        attribution
       );
       return { response: openAIResponse, status: 200, errorMessage: null };
     } catch (error: unknown) {
       lastStatus = 502;
       lastError = error instanceof Error ? error.message : "Invalid OpenRouter response";
-      await recordCall(options.callLogSink, route, latencyMs, 0, null, "error", lastError, taskId);
+      await recordCall(options.callLogSink, route, latencyMs, 0, null, "error", lastError, attribution);
     }
   }
 
@@ -298,14 +303,15 @@ async function recordCall(
   costUsd: number | null,
   status: LlmCallRecord["status"],
   errorMessage: string | null,
-  taskId: string | null
+  attribution: CallAttribution
 ): Promise<void> {
   if (sink === undefined) {
     return;
   }
 
   await sink.record({
-    taskId,
+    taskId: attribution.taskId,
+    sessionId: attribution.sessionId,
     requestedModel: route.requestedModel,
     routedModel: route.routedModel,
     tier: route.tier,
@@ -338,14 +344,15 @@ function extractOpenRouterCostUsd(value: unknown): number | null {
   return typeof cost === "number" ? cost : null;
 }
 
-function matchMessagesPath(pathname: string): { taskId: string | null } | null {
+function matchMessagesPath(pathname: string): CallAttribution | null {
   if (pathname === "/api/v1/messages") {
-    return { taskId: null };
+    return { taskId: null, sessionId: null };
   }
 
-  const match = /^\/api\/task\/([^/]+)\/v1\/messages$/.exec(pathname);
+  const match = /^\/api\/(task|session)\/([^/]+)\/v1\/messages$/.exec(pathname);
   if (match !== null) {
-    return { taskId: decodeURIComponent(match[1] as string) };
+    const id = decodeURIComponent(match[2] as string);
+    return match[1] === "task" ? { taskId: id, sessionId: null } : { taskId: null, sessionId: id };
   }
 
   return null;
