@@ -5,7 +5,7 @@ require "json"
 require "net/http"
 require "uri"
 
-TASK_PATH = "eval_task.json"
+EVAL_CASE_PATH = "eval_case.json"
 
 def fail_with_tests(message, raw_response: nil)
   details = { error: message }
@@ -23,16 +23,16 @@ def safe_relative_path?(path)
   expanded.start_with?("#{Dir.pwd}/")
 end
 
-def read_task
-  JSON.parse(File.read(TASK_PATH))
+def read_eval_case
+  JSON.parse(File.read(EVAL_CASE_PATH))
 rescue Errno::ENOENT
-  fail_with_tests("#{TASK_PATH} is missing")
+  fail_with_tests("#{EVAL_CASE_PATH} is missing")
 rescue JSON::ParserError => e
-  fail_with_tests("#{TASK_PATH} is invalid JSON: #{e.message}")
+  fail_with_tests("#{EVAL_CASE_PATH} is invalid JSON: #{e.message}")
 end
 
-def read_context(task)
-  editable = task.fetch("editableFiles")
+def read_context(eval_case)
+  editable = eval_case.fetch("editableFiles")
   files = (editable + Dir.glob("test_*.rb")).uniq.sort
   files.to_h do |path|
     fail_with_tests("unsafe context path: #{path}") unless safe_relative_path?(path)
@@ -40,7 +40,7 @@ def read_context(task)
   end
 end
 
-def prompt_for(task, files)
+def prompt_for(eval_case, files)
   file_blocks = files.map do |path, content|
     <<~TEXT
       --- #{path}
@@ -58,16 +58,16 @@ def prompt_for(task, files)
     {"files":{"relative/path.rb":"complete replacement file content"}}
 
     Rules:
-    - Edit only these files: #{task.fetch("editableFiles").join(", ")}
-    - Do not edit tests or eval_task.json.
+    - Edit only these files: #{eval_case.fetch("editableFiles").join(", ")}
+    - Do not edit tests or eval_case.json.
     - Return complete replacement contents for each edited file.
     - Keep the answer compact and ASCII.
 
-    Task:
-    #{task.fetch("prompt")}
+    Request:
+    #{eval_case.fetch("prompt")}
 
     Test command:
-    #{task.fetch("testCommand")}
+    #{eval_case.fetch("testCommand")}
 
     Current files:
     #{file_blocks}
@@ -174,10 +174,10 @@ def apply_edits(files, editable_files)
   applied
 end
 
-task = read_task
-files = read_context(task)
-response_text = call_model(prompt_for(task, files))
+eval_case = read_eval_case
+files = read_context(eval_case)
+response_text = call_model(prompt_for(eval_case, files))
 edits = parse_model_edit(response_text)
-applied = apply_edits(edits, task.fetch("editableFiles"))
+applied = apply_edits(edits, eval_case.fetch("editableFiles"))
 
 puts "applied model edits: #{applied.join(", ")}"

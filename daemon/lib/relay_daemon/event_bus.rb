@@ -4,9 +4,9 @@
 require "sorbet-runtime"
 
 module RelayDaemon
-  # Thread-safe in-process pub/sub for task lifecycle events.
+  # Thread-safe in-process pub/sub for daemon events.
   # Every published event is a hash:
-  #   {"type" => "...", "taskId" => "..." | nil, "payload" => {...}}
+  #   {"type" => "...", "payload" => {...}}
   class EventBus
     extend T::Sig
 
@@ -36,9 +36,9 @@ module RelayDaemon
 
     # Delivers the event to all subscribers. A raising subscriber does not
     # prevent delivery to the others.
-    sig { params(type: String, task_id: T.nilable(String), payload: T::Hash[String, T.untyped]).void }
-    def publish(type:, task_id: nil, payload: {})
-      event = { "type" => type, "taskId" => task_id, "payload" => payload }
+    sig { params(type: String, payload: T::Hash[String, T.untyped]).void }
+    def publish(type:, payload: {})
+      event = { "type" => type, "payload" => payload }
       subs = @mutex.synchronize { @subscribers.values.dup }
       subs.each do |sub|
         sub.call(event)

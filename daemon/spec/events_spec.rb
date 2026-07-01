@@ -6,8 +6,6 @@ require "relay_daemon/config"
 require "relay_daemon/db"
 require "relay_daemon/event_bus"
 require "relay_daemon/pairing_service"
-require "relay_daemon/repo_store"
-require "relay_daemon/task_store"
 require "relay_daemon/ws_handler"
 require "socket"
 require "stringio"
@@ -18,18 +16,17 @@ RSpec.describe RelayDaemon::EventBus do
   it "delivers published events to subscribers" do
     received = []
     bus.subscribe { |e| received << e }
-    bus.publish(type: "task.started", task_id: "t1", payload: { "a" => 1 })
+    bus.publish(type: "session.updated", payload: { "sessionId" => "s1" })
 
     expect(received).to eq([
-      { "type" => "task.started", "taskId" => "t1", "payload" => { "a" => 1 } }
+      { "type" => "session.updated", "payload" => { "sessionId" => "s1" } }
     ])
   end
 
-  it "defaults taskId to nil and payload to empty hash" do
+  it "defaults payload to an empty hash" do
     received = []
     bus.subscribe { |e| received << e }
     bus.publish(type: "stats.updated")
-    expect(received.first["taskId"]).to be_nil
     expect(received.first["payload"]).to eq({})
   end
 
@@ -37,7 +34,7 @@ RSpec.describe RelayDaemon::EventBus do
     received = []
     id = bus.subscribe { |e| received << e }
     bus.unsubscribe(id)
-    bus.publish(type: "task.started")
+    bus.publish(type: "session.updated")
     expect(received).to be_empty
   end
 
@@ -45,7 +42,7 @@ RSpec.describe RelayDaemon::EventBus do
     received = []
     bus.subscribe { |_e| raise "boom" }
     bus.subscribe { |e| received << e }
-    expect { bus.publish(type: "task.started") }.not_to raise_error
+    expect { bus.publish(type: "session.updated") }.not_to raise_error
     expect(received.length).to eq(1)
   end
 end
@@ -85,11 +82,11 @@ RSpec.describe RelayDaemon::WsHandler do
     it "forwards bus events as JSON frames when authorized" do
       ws = FakeWs.new
       described_class.attach(ws, authorized: true, bus: bus)
-      bus.publish(type: "task.started", task_id: "t1")
+      bus.publish(type: "session.updated", payload: { "sessionId" => "s1" })
 
       expect(ws.sent.length).to eq(1)
       expect(JSON.parse(ws.sent.first)).to eq(
-        { "type" => "task.started", "taskId" => "t1", "payload" => {} }
+        { "type" => "session.updated", "payload" => { "sessionId" => "s1" } }
       )
     end
 
@@ -97,7 +94,7 @@ RSpec.describe RelayDaemon::WsHandler do
       ws = FakeWs.new
       described_class.attach(ws, authorized: true, bus: bus)
       ws.close
-      bus.publish(type: "task.started")
+      bus.publish(type: "session.updated")
       expect(ws.sent).to be_empty
     end
 
@@ -105,7 +102,7 @@ RSpec.describe RelayDaemon::WsHandler do
       ws = FakeWs.new
       described_class.attach(ws, authorized: false, bus: bus)
       expect(ws.close_code).to eq(4401)
-      bus.publish(type: "task.started")
+      bus.publish(type: "session.updated")
       expect(ws.sent).to be_empty
     end
   end
@@ -199,25 +196,13 @@ RSpec.describe "WS route and lifecycle events" do
 
   let(:db_path)       { File.join(Dir.mktmpdir, "test.sqlite3") }
   let(:db)            { RelayDaemon::Db.new(db_path) }
-  let(:repo_store)    { RelayDaemon::RepoStore.new(db) }
-  let(:task_store)    { RelayDaemon::TaskStore.new(db) }
   let(:token)         { "events-test-token" }
-  let(:worktrees_dir) { Dir.mktmpdir }
-  let(:agent_log_dir) { Dir.mktmpdir }
   let(:bus)           { RelayDaemon::EventBus.new }
-  let(:git_dir)       { make_git_dir }
-  let(:repo)          { repo_store.create(path: git_dir) }
-
-  let(:fake_agent) { File.expand_path("support/fake_agent.rb", __dir__) }
 
   before do
     RelayDaemon::App.set(:relay_config, RelayDaemon::Config.new(
-      daemon_token: token, host: "127.0.0.1", port: 7777, db_path: db_path,
-      worktrees_dir: worktrees_dir, agent_log_dir: agent_log_dir,
-      agent_command: "ruby #{fake_agent} {prompt}"
+      daemon_token: token, host: "127.0.0.1", port: 7777, db_path: db_path
     ))
-    RelayDaemon::App.set(:repo_store, repo_store)
-    RelayDaemon::App.set(:task_store, task_store)
     RelayDaemon::App.set(:event_bus, bus)
     RelayDaemon::App.set(:ws_upgrader, RelayDaemon::FayeUpgrader)
   end
@@ -226,22 +211,6 @@ RSpec.describe "WS route and lifecycle events" do
 
   def auth_headers
     { "HTTP_AUTHORIZATION" => "Bearer #{token}" }
-  end
-
-  def run_task(quality: 5, agent_args: "")
-    post "/tasks",
-         { repoId: repo["id"], prompt: "do it", qualityDial: quality }.to_json,
-         { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
-    task_id = JSON.parse(last_response.body)["id"]
-    deadline = Time.now + 10
-    loop do
-      get "/tasks/#{task_id}", {}, auth_headers
-      t = JSON.parse(last_response.body)
-      break t if %w[needs_review failed].include?(t["status"])
-      raise "timeout" if Time.now > deadline
-
-      sleep 0.05
-    end
   end
 
   describe "GET /ws" do
@@ -262,7 +231,7 @@ RSpec.describe "WS route and lifecycle events" do
       get "/ws?token=#{token}"
       expect(last_response.status).to eq(200)
 
-      bus.publish(type: "task.started", task_id: "t1")
+      bus.publish(type: "session.updated", payload: { "sessionId" => "s1" })
       expect(fake_ws.sent.length).to eq(1)
     end
 
@@ -279,65 +248,4 @@ RSpec.describe "WS route and lifecycle events" do
     end
   end
 
-  describe "lifecycle publications" do
-    it "publishes task.started, agent.event lines, task.needs_review, stats.updated" do
-      events = []
-      bus.subscribe { |e| events << e }
-      task = run_task
-
-      types = events.map { |e| e["type"] }
-      expect(types).to include("task.started", "agent.event", "task.needs_review", "stats.updated")
-
-      lines = events.select { |e| e["type"] == "agent.event" }.map { |e| e["payload"]["line"] }
-      expect(lines).to include("agent line one", "agent line two")
-
-      review = events.find { |e| e["type"] == "task.needs_review" }
-      expect(review["taskId"]).to eq(task["id"])
-
-      # Ordering: started before agent events before needs_review
-      expect(types.index("task.started")).to be < types.index("agent.event")
-      expect(types.rindex("agent.event")).to be < types.index("task.needs_review")
-    end
-
-    it "publishes task.finished with status failed when the agent crashes" do
-      RelayDaemon::App.set(:relay_config, RelayDaemon::Config.new(
-        daemon_token: token, host: "127.0.0.1", port: 7777, db_path: db_path,
-        worktrees_dir: worktrees_dir, agent_log_dir: agent_log_dir,
-        agent_command: "ruby #{fake_agent} {prompt} 1"
-      ))
-      events = []
-      bus.subscribe { |e| events << e }
-      run_task
-
-      finished = events.find { |e| e["type"] == "task.finished" }
-      expect(finished["payload"]["status"]).to eq("failed")
-      expect(events.map { |e| e["type"] }).to include("stats.updated")
-    end
-
-    it "publishes task.finished with status approved on approve" do
-      task = run_task
-      events = []
-      bus.subscribe { |e| events << e }
-
-      post "/tasks/#{task["id"]}/approve", "", auth_headers
-      expect(last_response.status).to eq(200)
-
-      finished = events.find { |e| e["type"] == "task.finished" }
-      expect(finished["payload"]["status"]).to eq("approved")
-      expect(finished["taskId"]).to eq(task["id"])
-      expect(events.map { |e| e["type"] }).to include("stats.updated")
-    end
-
-    it "publishes task.finished with status rejected on reject" do
-      task = run_task
-      events = []
-      bus.subscribe { |e| events << e }
-
-      post "/tasks/#{task["id"]}/reject", "", auth_headers
-      expect(last_response.status).to eq(200)
-
-      finished = events.find { |e| e["type"] == "task.finished" }
-      expect(finished["payload"]["status"]).to eq("rejected")
-    end
-  end
 end

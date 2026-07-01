@@ -206,7 +206,6 @@ type NonStreamingResult =
     };
 
 type CallAttribution = {
-  taskId: string | null;
   sessionId: string | null;
 };
 
@@ -310,7 +309,6 @@ async function recordCall(
   }
 
   await sink.record({
-    taskId: attribution.taskId,
     sessionId: attribution.sessionId,
     requestedModel: route.requestedModel,
     routedModel: route.routedModel,
@@ -346,13 +344,12 @@ function extractOpenRouterCostUsd(value: unknown): number | null {
 
 function matchMessagesPath(pathname: string): CallAttribution | null {
   if (pathname === "/api/v1/messages") {
-    return { taskId: null, sessionId: null };
+    return { sessionId: null };
   }
 
-  const match = /^\/api\/(task|session)\/([^/]+)\/v1\/messages$/.exec(pathname);
+  const match = /^\/api\/session\/([^/]+)\/v1\/messages$/.exec(pathname);
   if (match !== null) {
-    const id = decodeURIComponent(match[2] as string);
-    return match[1] === "task" ? { taskId: id, sessionId: null } : { taskId: null, sessionId: id };
+    return { sessionId: decodeURIComponent(match[1] as string) };
   }
 
   return null;

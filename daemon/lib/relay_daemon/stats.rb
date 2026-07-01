@@ -25,20 +25,20 @@ module RelayDaemon
       cutoff = cutoff_for(range)
       call_totals = aggregate_calls(cutoff)
       per_model   = per_model_breakdown(cutoff)
-      task_stats  = aggregate_tasks(cutoff)
+      outcome_stats = aggregate_outcomes(cutoff)
 
       spend    = call_totals["spend_usd"].to_f
       frontier = call_totals["frontier_usd"].to_f
-      finished = task_stats["finished"].to_i
-      approved = task_stats["approved"].to_i
+      tested   = outcome_stats["tested"].to_i
+      passed   = outcome_stats["passed"].to_i
 
       {
         range: range,
         spendUsd: spend,
         frontierCostUsd: frontier,
         savedUsd: (frontier - spend).round(10),
-        taskCount: task_stats["total"].to_i,
-        taskSuccessRate: finished > 0 ? (approved.to_f / finished).round(6) : nil,
+        outcomeCount: outcome_stats["total"].to_i,
+        outcomeSuccessRate: tested > 0 ? (passed.to_f / tested).round(6) : nil,
         perModel: per_model.map do |row|
           {
             model: row["model"],
@@ -93,16 +93,16 @@ module RelayDaemon
     end
 
     sig { params(cutoff: T.nilable(String)).returns(T::Hash[String, T.untyped]) }
-    def aggregate_tasks(cutoff)
+    def aggregate_outcomes(cutoff)
       sql = <<~SQL
-        SELECT COUNT(*)                                            AS total,
-               SUM(CASE WHEN status IN ('approved','rejected','failed') THEN 1 ELSE 0 END) AS finished,
-               SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END)                       AS approved
-        FROM tasks
+        SELECT COUNT(*)                                                              AS total,
+               SUM(CASE WHEN tests_passed IS NOT NULL THEN 1 ELSE 0 END)             AS tested,
+               SUM(CASE WHEN tests_passed = 1 THEN 1 ELSE 0 END)                     AS passed
+        FROM session_test_runs
         #{date_filter("created_at", cutoff)}
       SQL
       row = @db.connection.get_first_row(sql, cutoff ? [cutoff] : [])
-      row || { "total" => 0, "finished" => 0, "approved" => 0 }
+      row || { "total" => 0, "tested" => 0, "passed" => 0 }
     end
 
     sig { params(column: String, cutoff: T.nilable(String)).returns(String) }

@@ -24,31 +24,6 @@ RSpec.describe RelayDaemon::EvalStore do
     end
   end
 
-  # tests_passed: 1, 0, or nil
-  def insert_task(tests_passed:, status: "needs_review")
-    id = SecureRandom.uuid
-    db.connection.execute(
-      <<~SQL,
-        INSERT INTO tasks (id, repo_id, prompt, quality_dial, status, branch, created_at, tests_passed)
-        VALUES (?, ?, 'do the thing', 5, ?, 'relay/x', ?, ?)
-      SQL
-      [id, repo_id, status, Time.now.utc.iso8601, tests_passed]
-    )
-    id
-  end
-
-  def insert_call(model:, task_id:, cost_usd: 0.001)
-    db.connection.execute(
-      <<~SQL,
-        INSERT INTO llm_calls
-          (task_id, requested_model, routed_model, tier, prompt_tokens, completion_tokens,
-           cost_usd, frontier_cost_usd, latency_ms, status, created_at)
-        VALUES (?, 'requested', ?, 1, 100, 50, ?, 0.01, 100, 'success', ?)
-      SQL
-      [task_id, model, cost_usd, Time.now.utc.iso8601]
-    )
-  end
-
   def insert_session(id:)
     db.connection.execute(
       <<~SQL,
@@ -84,39 +59,40 @@ RSpec.describe RelayDaemon::EvalStore do
       expect(store.model_outcomes).to eq([])
     end
 
-    it "computes a per-model pass rate over distinct tasks that ran tests" do
-      passed = insert_task(tests_passed: 1)
-      failed = insert_task(tests_passed: 0)
-      insert_call(model: "moonshotai/kimi-k2", task_id: passed, cost_usd: 0.001)
-      insert_call(model: "moonshotai/kimi-k2", task_id: passed, cost_usd: 0.002)
-      insert_call(model: "moonshotai/kimi-k2", task_id: failed, cost_usd: 0.001)
+    it "computes a per-model pass rate over distinct session outcomes that ran tests" do
+      session = insert_session(id: "session-eval-pass-rate")
+      insert_session_call(model: "moonshotai/kimi-k2", session_id: session, created_at: "2026-07-01T10:00:00Z", cost_usd: 0.001)
+      insert_session_call(model: "moonshotai/kimi-k2", session_id: session, created_at: "2026-07-01T10:00:30Z", cost_usd: 0.002)
+      insert_session_test(session_id: session, tests_passed: 1, created_at: "2026-07-01T10:01:00Z")
+      insert_session_call(model: "moonshotai/kimi-k2", session_id: session, created_at: "2026-07-01T10:02:00Z", cost_usd: 0.001)
+      insert_session_test(session_id: session, tests_passed: 0, created_at: "2026-07-01T10:03:00Z")
 
       row = store.model_outcomes.find { |r| r[:model] == "moonshotai/kimi-k2" }
       expect(row[:calls]).to eq(3)
-      expect(row[:tasks]).to eq(2)
-      expect(row[:tasksWithTests]).to eq(2)
-      expect(row[:tasksPassed]).to eq(1)
+      expect(row[:outcomes]).to eq(2)
+      expect(row[:outcomesWithTests]).to eq(2)
+      expect(row[:outcomesPassed]).to eq(1)
       expect(row[:passRate]).to be_within(0.0001).of(0.5)
       expect(row[:spendUsd]).to be_within(0.0001).of(0.004)
     end
 
-    it "reports a nil pass rate when no task has a test result yet" do
-      untested = insert_task(tests_passed: nil)
-      insert_call(model: "deepseek/deepseek-chat", task_id: untested)
+    it "reports a nil pass rate when no session outcome has a test result yet" do
+      session = insert_session(id: "session-eval-untested")
+      insert_session_call(model: "deepseek/deepseek-chat", session_id: session, created_at: Time.now.utc.iso8601)
 
       row = store.model_outcomes.find { |r| r[:model] == "deepseek/deepseek-chat" }
-      expect(row[:tasks]).to eq(1)
-      expect(row[:tasksWithTests]).to eq(0)
+      expect(row[:outcomes]).to eq(1)
+      expect(row[:outcomesWithTests]).to eq(0)
       expect(row[:passRate]).to be_nil
     end
 
-    it "excludes calls that are not attributed to a task" do
+    it "excludes calls that are not attributed to a session" do
       db.connection.execute(
         <<~SQL,
           INSERT INTO llm_calls
-            (task_id, requested_model, routed_model, tier, prompt_tokens, completion_tokens,
+            (requested_model, routed_model, tier, prompt_tokens, completion_tokens,
              cost_usd, frontier_cost_usd, latency_ms, status, created_at)
-          VALUES (NULL, 'requested', 'orphan-model', 1, 10, 5, 0.001, 0.01, 50, 'success', ?)
+          VALUES ('requested', 'orphan-model', 1, 10, 5, 0.001, 0.01, 50, 'success', ?)
         SQL
         [Time.now.utc.iso8601]
       )
@@ -124,10 +100,12 @@ RSpec.describe RelayDaemon::EvalStore do
     end
 
     it "breaks results down per routed model" do
-      a = insert_task(tests_passed: 1)
-      b = insert_task(tests_passed: 1)
-      insert_call(model: "moonshotai/kimi-k2", task_id: a)
-      insert_call(model: "deepseek/deepseek-chat", task_id: b)
+      a = insert_session(id: "session-model-a")
+      b = insert_session(id: "session-model-b")
+      insert_session_call(model: "moonshotai/kimi-k2", session_id: a, created_at: "2026-07-01T10:00:00Z")
+      insert_session_test(session_id: a, tests_passed: 1, created_at: "2026-07-01T10:01:00Z")
+      insert_session_call(model: "deepseek/deepseek-chat", session_id: b, created_at: "2026-07-01T10:00:00Z")
+      insert_session_test(session_id: b, tests_passed: 1, created_at: "2026-07-01T10:01:00Z")
       expect(store.model_outcomes.map { |r| r[:model] })
         .to eq(["deepseek/deepseek-chat", "moonshotai/kimi-k2"])
     end
@@ -169,9 +147,9 @@ RSpec.describe RelayDaemon::EvalStore do
 
       row = store.model_outcomes.find { |r| r[:model] == "moonshotai/kimi-k2" }
       expect(row[:calls]).to eq(2)
-      expect(row[:tasks]).to eq(2)
-      expect(row[:tasksWithTests]).to eq(2)
-      expect(row[:tasksPassed]).to eq(1)
+      expect(row[:outcomes]).to eq(2)
+      expect(row[:outcomesWithTests]).to eq(2)
+      expect(row[:outcomesPassed]).to eq(1)
       expect(row[:passRate]).to eq(0.5)
       expect(row[:spendUsd]).to be_within(0.0001).of(0.003)
     end
@@ -206,14 +184,18 @@ RSpec.describe "GET /eval/model-outcomes via app" do
       "INSERT INTO repos (path, name, created_at) VALUES ('/tmp/r', 'r', ?)",
       [Time.now.utc.iso8601]
     ) && db.connection.last_insert_row_id)
-    task_id = SecureRandom.uuid
+    session_id = "session-api-eval"
     db.connection.execute(
-      "INSERT INTO tasks (id, repo_id, prompt, quality_dial, status, branch, created_at, tests_passed) VALUES (?, ?, 'p', 5, 'needs_review', 'relay/x', ?, 1)",
-      [task_id, repo_id, Time.now.utc.iso8601]
+      "INSERT INTO chat_sessions (id, repo_id, branch, base_commit, status, created_at) VALUES (?, ?, ?, ?, 'active', ?)",
+      [session_id, repo_id, "relay/session/#{session_id}", "0" * 40, Time.now.utc.iso8601]
     )
     db.connection.execute(
-      "INSERT INTO llm_calls (task_id, requested_model, routed_model, tier, prompt_tokens, completion_tokens, cost_usd, frontier_cost_usd, latency_ms, status, created_at) VALUES (?, 'requested', 'moonshotai/kimi-k2', 1, 100, 50, 0.001, 0.01, 100, 'success', ?)",
-      [task_id, Time.now.utc.iso8601]
+      "INSERT INTO llm_calls (session_id, requested_model, routed_model, tier, prompt_tokens, completion_tokens, cost_usd, frontier_cost_usd, latency_ms, status, created_at) VALUES (?, 'requested', 'moonshotai/kimi-k2', 1, 100, 50, 0.001, 0.01, 100, 'success', ?)",
+      [session_id, "2026-07-01T10:00:00Z"]
+    )
+    db.connection.execute(
+      "INSERT INTO session_test_runs (session_id, tests_passed, created_at) VALUES (?, 1, ?)",
+      [session_id, "2026-07-01T10:01:00Z"]
     )
 
     get "/eval/model-outcomes", {}, { "HTTP_AUTHORIZATION" => "Bearer #{token}" }

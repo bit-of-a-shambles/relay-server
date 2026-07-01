@@ -108,7 +108,7 @@ describe("Anthropic to OpenAI translation", () => {
         { type: "text", text: "First system block." },
         { type: "text", text: "Second system block." }
       ],
-      metadata: { taskId: "task_1" },
+      metadata: { sessionId: "session_1" },
       stop_sequences: ["STOP"],
       top_p: 0.8,
       tool_choice: { type: "tool", name: "read_file" },
@@ -135,7 +135,7 @@ describe("Anthropic to OpenAI translation", () => {
 
     expect(toOpenAIRequest(request, { model: "openrouter/test" })).toMatchObject({
       model: "openrouter/test",
-      metadata: { taskId: "task_1" },
+      metadata: { sessionId: "session_1" },
       stop: ["STOP"],
       top_p: 0.8,
       tool_choice: {

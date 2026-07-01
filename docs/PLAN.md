@@ -1,212 +1,200 @@
-# Build Prompt: "Relay" - Mobile Remote + Cost Router for Coding Agents
+# Relay Plan
 
-You are a senior engineer building a production-quality MVP. Work in phases, verify each phase compiles and passes its acceptance criteria before moving on, and ask me before deviating from this spec.
+Relay is a mobile remote for a local Mac coding agent. The iOS app gives the
+developer a continuous Codex-like chat against a repo on their Mac; the Mac
+daemon runs the agent locally; the router intercepts model calls and chooses
+cheap or frontier models based on policy, overrides, and verified outcomes.
 
-## Product in one sentence
+## Product Model
 
-An iOS app that gives a developer a remote, continuous chat with a coding
-agent running on their own Mac repo — closer to Codex than to a task queue —
-where every model call is transparently routed through a cost-optimizing
-proxy (cheap open-weight models by default, frontier models on escalation),
-with per-session cost and outcome tracking, and where review/merge is a
-checkpoint action inside the conversation rather than the end of every turn.
+The active primitive is a repo-scoped chat session:
 
-## Architecture model (2026-06-30 revision)
+1. The user pairs the iPhone with the Mac daemon over Tailscale or LAN.
+2. The user registers or selects a local Git repo from the iOS app.
+3. Relay opens one active `chat_session` for that repo, backed by a persistent
+   session worktree and branch.
+4. Each iOS message is appended to `messages` and sent to the local coding
+   agent in that session worktree.
+5. Agent output, assistant replies, diffs, tests, and approvals appear in one
+   chat timeline instead of separate task screens.
+6. Diff, test, and approve are explicit session actions. The session remains
+   active after those actions so the conversation can continue.
+7. Model routing is transparent by default, with per-message model override
+   and a toggle controlling whether test outcomes update the eval dataset.
 
-> **This supersedes the original "create task → wait → review → done" model
-> described lower in this doc and reflected in the current `tasks`-table
-> implementation.** The implementation has not been migrated yet; see
-> [docs/AGENT_PLAYBOOK.md](docs/AGENT_PLAYBOOK.md) Track G for the migration
-> milestones and [docs/STATUS.md](docs/STATUS.md) for current status.
-
-Relay is a **remote chat UI for a local Mac coding agent**. The core
-primitive is a **chat session** scoped to a repo, not a one-shot task:
-
-1. **Pick a repo on the Mac.** The iOS app browses/selects a repo the daemon
-   already knows about (or registers a new one). All work happens on that
-   Mac's filesystem.
-2. **Open a continuous chat.** The app creates or resumes a chat session for
-   that repo. A session is long-lived: it is not "create task, wait, review,
-   done" for every message — it is one running conversation the user returns
-   to.
-3. **Send messages into the same agent session.** Each user message
-   continues the conversation. The agent retains context: prior turns, files
-   it inspected, and previous changes in that session. This requires the
-   underlying agent CLI process to be resumable/continuable per session
-   (e.g. Claude Code's session-resume support), not re-spawned fresh per
-   message.
-4. **Stream back assistant/tool output as a timeline.** iOS shows a normal
-   chat timeline: user messages, assistant responses, tool calls/output,
-   file edits, errors, and test output, in order, per session — not a single
-   collapsed task-result screen.
-5. **Model routing happens underneath, unchanged in spirit.** The router
-   still intercepts model calls and chooses cheap/better models unless the
-   user overrides the model for that session/message. The eval toggle
-   controls whether that session/message contributes to learned routing.
-   Attribution moves from `task_id` to a session/message identity (see Track
-   G in the playbook).
-6. **Code changes stay local until reviewed.** The agent works in the Mac
-   repo, on a session-scoped branch/worktree (this part is unchanged from the
-   current implementation). Review/approve is a **checkpoint/merge action
-   the user can take at any point in the session**, not something that
-   automatically happens at the end of every chat turn.
-7. **Tests/diffs are session actions, not lifecycle stages.** The user can
-   ask the agent (in chat) to run tests, or tap explicit "run tests" / "review
-   diff" controls. The app exposes the session's *current* diff and test
-   state at any time, which can be queried repeatedly as the conversation
-   continues — diffs and test runs are not a one-time end-of-task event.
-
-The backend's core primitive shifts from `tasks` (one-shot, terminal status)
-to **chat sessions + messages + local workspace state**, with
-review/merge/test as session-level actions a user can invoke at any point,
-any number of times, rather than a single terminal step per task. The
-sections below (data model, REST/WS contract, iOS screens) describe the
-**original task-based MVP that is currently implemented**; treat them as
-history/reference until Track G's migration lands, at which point this file
-should be rewritten in place rather than left with two competing models.
-
-## What we are NOT building (MVP non-goals)
-
-- No user accounts, no cloud backend, no billing. BYOK: the user supplies their own OpenRouter API key.
-- No custom relay server. Assume the iPhone reaches the Mac over Tailscale or LAN (the user installs Tailscale themselves; we just document it).
-- No Android, no watchOS, no web UI.
-- No push notifications via APNs (requires a server). Use in-app live updates; local notifications only while the app is running.
-- Do not fork or reimplement the coding agent. We wrap the existing Claude Code CLI in headless mode.
-
-## Architecture (3 components, one repo)
+## Components
 
 ```text
 relay/
-  router/     TypeScript. Anthropic-Messages-API-compatible proxy. Runnable standalone.
-  daemon/     Ruby + Sorbet. Runs on the Mac. The brain.
-  ios/        Swift 5.10+, SwiftUI, iOS 17+. The client.
-  menubar/    Swift, macOS 14+. Thin status item wrapper that starts/stops the daemon. (Phase 5, optional.)
+  router/     TypeScript Anthropic-compatible cost router
+  daemon/     Ruby + Sorbet Mac service, SQLite, Git worktrees, pairing
+  ios/        SwiftUI iPhone client
+  menubar/    Swift macOS status item wrapper
 ```
 
-The router and daemon are separate local processes, not shared in-process modules. The daemon starts and supervises the router, points Claude Code at `ANTHROPIC_BASE_URL=http://127.0.0.1:7778/api`, and receives routing/cost events from the router over a small authenticated local HTTP contract.
+The router and daemon are separate local processes. The daemon supervises the
+router when configured to do so, points the agent at the router with
+`ANTHROPIC_BASE_URL`, and receives model call records through
+`POST /internal/llm-calls`.
 
-### Component 1: `router/` - the cost router
+## Router
 
-TypeScript, Node 20+, strict mode, vitest.
+The router speaks the Anthropic Messages API on the listen side and forwards to
+OpenRouter's OpenAI-compatible chat completions endpoint upstream. It translates
+messages, tool calls, streaming deltas, and usage back to Anthropic shape so
+existing coding agents can use it as their base URL.
 
-An HTTP proxy that speaks the **Anthropic Messages API** on the listen side (so Claude Code can point `ANTHROPIC_BASE_URL` at it) and forwards to **OpenRouter** (`https://openrouter.ai/api/v1`) on the upstream side, translating Anthropic-format requests to OpenAI chat-completions format and back, including tool-use blocks and streaming (SSE). This translation layer is the hardest part of the project - budget real effort for it, write it test-first against recorded fixtures of real Claude Code requests.
+Routing is config-driven and hot-reloaded:
 
-Routing policy (config file `routing.json`, hot-reloaded):
+- Tiers contain ordered model lists.
+- Rules choose a base tier from request/model metadata.
+- Quality dial or per-message model override can alter the decision.
+- Upstream failures can retry at the next tier and record an escalation reason.
+- Every attempt emits a call record with requested/routed model, tier, tokens,
+  cost, frontier counterfactual cost, latency, status, and optional `sessionId`.
 
-```jsonc
-{
-  "tiers": {
-    "0": ["qwen/qwen3-coder-small"],
-    "1": ["moonshotai/kimi-k2", "deepseek/deepseek-chat"],
-    "2": ["anthropic/claude-sonnet-latest"],
-    "3": ["anthropic/claude-opus-latest"]
-  },
-  "rules": [
-    { "when": "requestedModel contains 'haiku'", "tier": 0 },
-    { "when": "promptTokens > 60000", "tier": 2 },
-    { "when": "default", "tier": 1 }
-  ],
-  "qualityDial": { "comment": "dial 0..10 shifts every decision up/down a tier: tier = clamp(baseTier + (dial-5)/3)" },
-  "escalation": { "onTestFailure": "+1 tier for remainder of task", "onSameFileEditedThriceWithoutTestsPassing": "+1 tier" }
-}
-```
-
-Every proxied call emits a routing/cost event containing the routing decision, token counts, cost (from OpenRouter's returned usage/pricing), and the counterfactual frontier cost. The daemon persists those events into `llm_calls`. Fail open: if a tier-0/1 model errors or returns malformed tool calls twice, retry at the next tier up and record `escalation_reason`.
-
-### Component 2: `daemon/` - the Mac-side service
-
-Ruby 3.3+ or current stable Ruby, with Sorbet for typed domain models and service boundaries.
-
-Responsibilities:
-
-1. Serve a WebSocket + REST API on `0.0.0.0:7777` (token-authenticated, see Security).
-1. Start and supervise the local router process on `127.0.0.1:7778`.
-1. Manage **sessions**: spawn the Claude Code CLI in headless/print mode (`claude -p "<task>" --output-format stream-json --verbose --permission-mode plan --no-session-persistence` or equivalent current flags - check `claude --help` at build time and adapt) inside a user-selected repo directory, with `ANTHROPIC_BASE_URL` pointed at the local router and a dummy API key.
-1. Stream agent events (tool calls, text, file edits) to connected iOS clients over WebSocket.
-1. Compute diffs: after the agent finishes (or at checkpoint), run `git diff` in the workspace and expose it per-file. Tasks run on a scratch branch (`relay/<task-id>`) created from the current HEAD; approval merges or leaves the branch, rejection deletes it. Never commit to the user's branch without approval.
-1. Run the repo's test command (configurable per repo, e.g. `npm test`) after the agent finishes, record pass/fail.
-1. Persist everything in SQLite via a Ruby SQLite library such as `sqlite3` or `sequel`: repos, tasks, sessions, per-request routing decisions, costs, outcomes.
-1. Expose a `/stats` endpoint aggregating: total spend, estimated spend if everything had gone to the frontier model (computed from the same token counts at frontier prices), savings, task success rate, per-model breakdown.
-
-Key REST/WS contract (JSON):
+The router supports:
 
 ```text
-POST /pair/start            -> { qrPayload }            # generates one-time pairing code, prints QR in terminal
-POST /pair/claim            -> { authToken }            # exchange pairing code for long-lived token
-GET  /repos                 -> [{ id, path, name, testCommand }]
-POST /repos                 { path, testCommand }
-POST /tasks                 { repoId, prompt, qualityDial }   # qualityDial 0..10
-GET  /tasks/:id             -> { status, costUsd, savedUsd, testsPassed, branch }
-GET  /tasks/:id/diff        -> [{ file, unifiedDiff, additions, deletions }]
-POST /tasks/:id/approve     # merge scratch branch into original branch (fast-forward or merge commit)
-POST /tasks/:id/reject      # delete scratch branch
-GET  /stats?range=30d
-WS   /ws?token=...          # server pushes: task.started, agent.event, task.needs_review, task.finished, stats.updated
+POST /api/v1/messages
+POST /api/session/:sessionId/v1/messages
+GET  /health
 ```
 
-Data model (SQLite tables): `repos`, `tasks(id, repo_id, prompt, quality_dial, status[queued|running|needs_review|approved|rejected|failed], branch, created_at, finished_at, tests_passed, cost_usd, frontier_cost_usd)`, `llm_calls(id, task_id, requested_model, routed_model, tier, prompt_tokens, completion_tokens, cost_usd, latency_ms, escalation_reason NULL)`.
+There is no active task-scoped router route.
 
-### Component 3: `ios/` - the iPhone app
+## Daemon
 
-SwiftUI, MVVM, no third-party dependencies except what's necessary (prefer none; use URLSession WebSocket). Screens:
+The daemon is the Mac-side source of truth. It:
 
-1. **Pairing** - scan QR from the daemon (payload: `{url, pairingCode}`), claim token, store in Keychain.
-1. **Home / task launcher** - repo picker, multiline prompt field with dictation, quality dial (slider 0-10 labeled "Cheapest <-> Best"), Start button. Below: active sessions with live status.
-1. **Session detail** - live feed of agent events (collapsed tool calls, streamed text), task status banner.
-1. **Diff review** - triggered by `task.needs_review`: file list with +/- counts, per-file unified diff rendered with syntax-aware coloring (green/red lines is enough for MVP), Approve / Reject buttons, test-result badge ("tests passed" / "tests failed").
-1. **Savings dashboard** - this month: spent, saved vs. frontier-only, success rate; per-model bar breakdown; simple list, no charting library needed.
+- Authenticates REST and WebSocket clients with bearer tokens.
+- Creates one-time pairing codes and claim tokens.
+- Registers local Git repos and exposes a simple filesystem browser for repo
+  selection.
+- Opens or resumes one active chat session per repo.
+- Runs the configured agent command in the session worktree.
+- Captures agent stdout/stderr to per-session run logs and broadcasts live
+  `agent.event` frames.
+- Appends user and assistant messages to SQLite.
+- Exposes current session diffs and runs the repo test command on demand.
+- Records session test outcomes and optionally rewrites routing config from
+  verified model outcomes.
+- Approves a session by merging the session branch into the repo.
+- Computes spend, savings, per-model usage, and outcome success metrics.
 
-Design: clean, dense, dark-mode-first, monospace for code/diffs, SF Symbols. No onboarding fluff.
+Primary REST/WS contract:
 
-### Security (non-negotiable)
+```text
+POST /pair/start                    -> { qrPayload: { url, pairingCode } }
+POST /pair/claim                    -> { authToken }
 
-- All HTTP/WS requires `Authorization: Bearer <token>`; pairing codes are single-use and expire in 5 minutes; tokens are 256-bit random, revocable via daemon CLI.
-- The daemon refuses to start with a publicly routable bind unless `--unsafe` is passed; document Tailscale as the intended transport.
-- Agent runs with Claude Code's own permission system in its default mode; the daemon never grants blanket `--dangerously-skip-permissions` unless the repo config explicitly opts in.
-- The OpenRouter key lives only in the daemon's config on the Mac, never sent to the phone.
+GET  /fs/entries?path=...
+GET  /repos                         -> [{ id, path, name, testCommand }]
+POST /repos                         { path, testCommand }
 
-## Build phases & acceptance criteria
+POST /sessions                      { repoId } -> ChatSession
+GET  /sessions/:id/messages         -> [ChatMessage]
+POST /sessions/:id/messages         { content, modelOverride? } -> 202 { id }
+GET  /sessions/:id/diff             -> [DiffFile]
+POST /sessions/:id/test             { learnFromOutcome } -> { testsPassed }
+POST /sessions/:id/approve          -> ChatSession
 
-**Phase 1 - Router core.** Anthropic->OpenAI translation with streaming + tool use, forwarding to OpenRouter. Accept: Claude Code pointed at the router completes a real multi-tool task in a sample repo using a non-Anthropic model.
+GET  /stats?range=30d
+GET  /eval/model-outcomes
+POST /internal/llm-calls
+WS   /ws?token=...
+```
 
-Status as of 2026-06-12: implementation and offline Claude Code compatibility are complete. The real OpenRouter acceptance smoke is blocked until `OPENROUTER_API_KEY` is configured.
+WebSocket events use a generic envelope:
 
-**Phase 2 - Routing + logging.** Tier rules, escalation, SQLite logging, cost math, `/stats`. Accept: a task produces `llm_calls` rows showing >=2 different routed models, and `/stats` shows nonzero savings.
+```json
+{ "type": "message.created", "payload": { "sessionId": "...", "message": {} } }
+{ "type": "agent.event", "payload": { "sessionId": "...", "line": "..." } }
+{ "type": "session.updated", "payload": { "sessionId": "..." } }
+{ "type": "stats.updated", "payload": {} }
+```
 
-Status as of 2026-06-12: router-side routing rules, quality dial handling, retry escalation, JSONL call logging, and frontier cost estimates are implemented and tested. Daemon-owned SQLite persistence and `/stats` are not started.
+## Data Model
 
-**Phase 3 - Daemon session manager.** Task lifecycle, scratch branches, diff endpoint, test runner, WebSocket events, pairing. Accept: full task lifecycle driven by `curl` + `wscat` alone: create -> events stream -> diff retrievable -> approve merges branch.
+Active tables:
 
-**Phase 4 - iOS app.** All five screens against the live daemon. Accept: on a physical iPhone over Tailscale, I can start a task, watch it run, review the diff, approve it, and see the dashboard update.
+- `repos`
+- `chat_sessions`
+- `messages`
+- `session_test_runs`
+- `llm_calls`
 
-**Phase 5 (optional) - macOS menu-bar wrapper.** Status item: daemon on/off, QR pairing window, link to logs.
+`llm_calls.session_id` is the active attribution field for routing/eval.
+`eval_dataset` is session-only: each attributed call is joined to the first
+later session test run, so a long-running conversation can contribute multiple
+verified outcomes.
 
-Status as of 2026-06-24: Phases 1-5 are complete and accepted (see
-[STATUS.md](STATUS.md)).
+The old physical `tasks` table and `llm_calls.task_id` column may remain in the
+SQLite schema as read-only historical data to preserve old cost/eval records.
+They are not active API primitives and should not be used by new product code.
 
-**Phase 6 - Chat-session architecture pivot.** Replace the task-as-primitive
-model above with chat sessions + messages + local workspace state, per
-"Architecture model (2026-06-30 revision)" earlier in this doc. Accept: a
-user can open one chat session for a repo, send multiple messages that share
-agent context/history, see a running timeline, and invoke diff/test/approve
-as session actions at any point without the session ending. Tracked
-milestone-by-milestone as Track G in
-[AGENT_PLAYBOOK.md](AGENT_PLAYBOOK.md).
+## iOS App
 
-## Engineering standards
+The app is a dark-mode-first SwiftUI chat client:
 
-- TypeScript: strict mode, vitest, no `any` in router translation code.
-- Ruby: Sorbet enabled for daemon domain models and service boundaries; avoid untyped core task/session/git lifecycle paths.
-- Swift: no force-unwraps, async/await throughout.
-- The router translation layer ships with recorded-fixture tests (capture real Claude Code request/response pairs in Phase 1 and check them in).
-- README per component with exact run instructions, including separate Node and Ruby dependency setup; top-level README with the 10-minute setup path (install daemon, add OpenRouter key, install Tailscale, scan QR).
-- When the Claude Code CLI's flags or the OpenRouter API differ from what's written here, trust the live `--help`/docs and tell me what changed.
+- Pairing screen: QR scan and pairing-code fallback.
+- Home: repo list, file-browser-based repo registration, dashboard link.
+- Repo chat: one continuous timeline of user messages, assistant replies, live
+  agent output, diff summaries, test results, and approval activity.
+- Composer: model picker, eval-learning toggle, multiline message entry, send.
+- Session actions: diff, run tests, approve.
+- Dashboard: spend, savings vs frontier, outcome success, first-try pass rate,
+  and per-model verified outcomes.
 
-## Current instruction
+The iOS app does not create or display task-only screens.
 
-Continue from [STATUS.md](STATUS.md) and [AGENT_PLAYBOOK.md](AGENT_PLAYBOOK.md)
-Track G. The original task-based MVP (Phases 1-5 above) is complete and
-working; the next body of work is the architecture pivot described in
-"Architecture model (2026-06-30 revision)" above — migrating the `tasks`
-primitive to chat sessions + messages, one playbook milestone at a time, per
-The Loop in [AGENTS.md](../AGENTS.md).
+## Security
+
+- All daemon REST/WS routes require bearer auth except `/healthz` and `/pair/*`.
+- Pairing codes are single-use, expire quickly, and exchange for random tokens.
+- The daemon refuses unsafe public binds unless explicitly overridden.
+- The OpenRouter key stays on the Mac/router side and is never sent to iOS.
+- Agent commands run in isolated session worktrees and merge only after user
+  approval.
+
+## Validation
+
+Router:
+
+```bash
+cd router
+npm run build
+npm test
+npm run coverage
+```
+
+Daemon:
+
+```bash
+cd daemon
+bundle exec srb tc
+bundle exec rspec
+```
+
+iOS:
+
+```bash
+cd ios
+xcodegen generate
+xcodebuild test -project Relay.xcodeproj -scheme Relay -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.5'
+```
+
+macOS menu bar:
+
+```bash
+cd menubar
+xcodegen generate
+xcodebuild test -project RelayMenuBar.xcodeproj -scheme RelayMenuBar -destination 'platform=macOS'
+```
+
+## Release
+
+For TestFlight, bump `CFBundleVersion` in `ios/project.yml`, run
+`xcodegen generate`, confirm the generated plist version, then run
+`ios/scripts/testflight_upload.sh` using the App Store Connect API key
+configuration documented in `AGENTS.md`.
