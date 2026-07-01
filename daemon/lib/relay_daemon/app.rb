@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 
 require "sinatra/base"
+require "fileutils"
 require "json"
 require "securerandom"
 require_relative "config"
@@ -15,6 +16,8 @@ require_relative "pairing_service"
 require_relative "repo_store"
 require_relative "eval_store"
 require_relative "stats"
+require_relative "session_runner"
+require_relative "session_store"
 require_relative "task_runner"
 require_relative "task_store"
 require_relative "ws_handler"
@@ -33,6 +36,7 @@ module RelayDaemon
     set :relay_config, RelayDaemon::Config.from_env
     set :llm_call_store, nil  # nil = disabled; tests and bin/daemon inject a real one
     set :repo_store, nil      # RelayDaemon::RepoStore; tests inject
+    set :session_store, nil   # RelayDaemon::SessionStore; tests inject
     set :task_store, nil      # RelayDaemon::TaskStore; tests inject
     set :stats_db, nil        # RelayDaemon::Db instance; tests and bin/daemon inject
     set :event_bus, RelayDaemon::EventBus.new
@@ -228,6 +232,174 @@ module RelayDaemon
       rescue ArgumentError => e
         halt 422, JSON.generate({ error: e.message })
       end
+    end
+
+    # ----- Chat sessions -----
+
+    post "/sessions" do
+      content_type :json
+
+      body_str = request.body.read
+      data = begin
+        JSON.parse(body_str)
+      rescue JSON::ParserError
+        halt 400, JSON.generate({ error: "invalid JSON" })
+      end
+
+      unless data.is_a?(Hash) && data["repoId"].is_a?(Integer)
+        halt 422, JSON.generate({ error: "repoId is required" })
+      end
+
+      repo_store = settings.repo_store
+      halt 503, JSON.generate({ error: "repo store not configured" }) if repo_store.nil?
+      session_store = settings.session_store
+      halt 503, JSON.generate({ error: "session store not configured" }) if session_store.nil?
+
+      repo = repo_store.find(data["repoId"])
+      halt 422, JSON.generate({ error: "repo not found" }) if repo.nil?
+
+      existing = session_store.active_for_repo(repo["id"])
+      if existing
+        status 200
+        JSON.generate(existing)
+      else
+        status 201
+        JSON.generate(session_store.create(repo: repo, worktrees_dir: settings.relay_config.worktrees_dir))
+      end
+    end
+
+    get "/sessions/:id/messages" do
+      content_type :json
+
+      session_store = settings.session_store
+      halt 503, JSON.generate({ error: "session store not configured" }) if session_store.nil?
+
+      session = session_store.find(params[:id])
+      halt 404, JSON.generate({ error: "not found" }) if session.nil?
+
+      db = settings.stats_db
+      halt 503, JSON.generate({ error: "database not configured" }) if db.nil?
+
+      JSON.generate(RelayDaemon::MessageStore.new(db, session_store).list_for_session(params[:id]))
+    end
+
+    post "/sessions/:id/messages" do
+      content_type :json
+
+      session_store = settings.session_store
+      halt 503, JSON.generate({ error: "session store not configured" }) if session_store.nil?
+      db = settings.stats_db
+      halt 503, JSON.generate({ error: "database not configured" }) if db.nil?
+
+      body_str = request.body.read
+      data = begin
+        JSON.parse(body_str)
+      rescue JSON::ParserError
+        halt 400, JSON.generate({ error: "invalid JSON" })
+      end
+
+      content = data["content"] if data.is_a?(Hash)
+      unless content.is_a?(String) && !content.empty?
+        halt 422, JSON.generate({ error: "content is required" })
+      end
+
+      session = session_store.find(params[:id])
+      halt 404, JSON.generate({ error: "not found" }) if session.nil?
+      agent_command = settings.relay_config.agent_command
+      halt 503, JSON.generate({ error: "agent command not configured" }) if agent_command.nil?
+
+      message_store = RelayDaemon::MessageStore.new(db, session_store)
+      resume = !message_store.list_for_session(session["id"]).empty?
+      run_id = SecureRandom.uuid
+      message = message_store.append(
+        session_id: session["id"],
+        role: "user",
+        content: content,
+        agent_run_id: run_id
+      )
+      settings.event_bus.publish(
+        type: "message.created",
+        payload: { "sessionId" => session["id"], "message" => message }
+      )
+
+      RelayDaemon::SessionRunner.run_async(
+        session_id: session["id"],
+        content: content,
+        worktree_path: File.join(settings.relay_config.worktrees_dir, session["id"]),
+        sessions_log_dir: File.join(settings.relay_config.agent_log_dir, "sessions"),
+        agent_command: agent_command,
+        db_path: settings.relay_config.db_path,
+        event_bus: settings.event_bus,
+        agent_env: { "RELAY_SESSION_ID" => session["id"] },
+        run_id: run_id,
+        append_user: false,
+        resume: resume
+      )
+      status 202
+      JSON.generate({ "id" => message["id"] })
+    end
+
+    get "/sessions/:id/diff" do
+      content_type :json
+
+      session_store = settings.session_store
+      halt 503, JSON.generate({ error: "session store not configured" }) if session_store.nil?
+      session = session_store.find(params[:id])
+      halt 404, JSON.generate({ error: "not found" }) if session.nil?
+
+      git = RelayDaemon::Git.new(File.join(settings.relay_config.worktrees_dir, session["id"]))
+      JSON.generate(git.diff_files(session["baseCommit"].to_s))
+    end
+
+    post "/sessions/:id/test" do
+      content_type :json
+
+      session_store = settings.session_store
+      halt 503, JSON.generate({ error: "session store not configured" }) if session_store.nil?
+      repo_store = settings.repo_store
+      halt 503, JSON.generate({ error: "repo store not configured" }) if repo_store.nil?
+      session = session_store.find(params[:id])
+      halt 404, JSON.generate({ error: "not found" }) if session.nil?
+      repo = repo_store.find(session["repoId"])
+      halt 422, JSON.generate({ error: "repo not found" }) if repo.nil?
+
+      test_command = repo["testCommand"]
+      if test_command.nil? || test_command.empty?
+        JSON.generate({ "testsPassed" => nil })
+      else
+        log_path = File.join(settings.relay_config.agent_log_dir, "sessions", session["id"], "test.log")
+        FileUtils.mkdir_p(File.dirname(log_path))
+        pid = Process.spawn("sh", "-c", test_command, out: [log_path, "a"], err: [:child, :out],
+                            chdir: File.join(settings.relay_config.worktrees_dir, session["id"]))
+        _, test_status = Process.wait2(pid)
+        JSON.generate({ "testsPassed" => test_status.success? })
+      end
+    end
+
+    post "/sessions/:id/approve" do
+      content_type :json
+
+      session_store = settings.session_store
+      halt 503, JSON.generate({ error: "session store not configured" }) if session_store.nil?
+      repo_store = settings.repo_store
+      halt 503, JSON.generate({ error: "repo store not configured" }) if repo_store.nil?
+      session = session_store.find(params[:id])
+      halt 404, JSON.generate({ error: "not found" }) if session.nil?
+      repo = repo_store.find(session["repoId"])
+      halt 422, JSON.generate({ error: "repo not found" }) if repo.nil?
+
+      git = RelayDaemon::Git.new(repo["path"])
+      begin
+        git.merge(session["branch"])
+      rescue RelayDaemon::Git::GitError => e
+        halt 409, JSON.generate({ error: "merge_conflict" }) if e.message == "merge_conflict"
+
+        halt 500, JSON.generate({ error: e.message })
+      end
+
+      session_store.update_base_commit(session["id"], git.head_sha)
+      settings.event_bus.publish(type: "session.updated", payload: { "sessionId" => session["id"] })
+      JSON.generate(T.must(session_store.find(session["id"])))
     end
 
     # ----- Tasks -----

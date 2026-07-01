@@ -59,6 +59,25 @@ module RelayDaemon
       row ? row_to_h(row) : nil
     end
 
+    sig { params(repo_id: Integer).returns(T.nilable(T::Hash[String, T.untyped])) }
+    def active_for_repo(repo_id)
+      row = @db.connection.get_first_row(
+        "SELECT id, repo_id, branch, base_commit, status, created_at, last_message_at
+         FROM chat_sessions WHERE repo_id = ? AND status = 'active'
+         ORDER BY created_at ASC LIMIT 1",
+        [repo_id]
+      )
+      row ? row_to_h(row) : nil
+    end
+
+    sig { params(id: String, base_commit: String).void }
+    def update_base_commit(id, base_commit)
+      @db.connection.execute(
+        "UPDATE chat_sessions SET base_commit = ? WHERE id = ?",
+        [base_commit, id]
+      )
+    end
+
     sig { params(id: String).void }
     def touch_last_message(id)
       @db.connection.execute(
