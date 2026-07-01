@@ -98,6 +98,22 @@ Claude Code help exposes two relevant flags:
 the first run receives `--session-id` and subsequent runs receive `--resume`
 without invoking the real Claude CLI.
 
+## Session API
+
+Track G adds a chat-session REST surface alongside the older task routes:
+
+- `POST /sessions {"repoId": 1}` creates or returns the active session for a
+  repo.
+- `GET /sessions/:id/messages` lists ordered chat messages.
+- `POST /sessions/:id/messages {"content": "..."}` appends a user message and
+  starts/resumes the session agent run asynchronously.
+- `GET /sessions/:id/diff`, `POST /sessions/:id/test`, and
+  `POST /sessions/:id/approve` operate on the current session worktree.
+
+MVP constraint: Relay keeps one active chat session per repo. Re-posting
+`/sessions` for the same repo returns that active session instead of creating a
+second one.
+
 ## Acceptance walkthrough
 
 Proves the full Phase 3 lifecycle with HTTP + websocket clients alone.

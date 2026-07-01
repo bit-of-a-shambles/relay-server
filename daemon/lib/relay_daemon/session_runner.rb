@@ -33,10 +33,13 @@ module RelayDaemon
           agent_command: String,
           db_path: String,
           event_bus: EventBus,
-          agent_env: T::Hash[String, String]
+          agent_env: T::Hash[String, String],
+          run_id: T.nilable(String),
+          append_user: T::Boolean,
+          resume: T.nilable(T::Boolean)
         ).returns(Thread)
       end
-      def run_async(session_id:, content:, worktree_path:, sessions_log_dir:, agent_command:, db_path:, event_bus:, agent_env: {})
+      def run_async(session_id:, content:, worktree_path:, sessions_log_dir:, agent_command:, db_path:, event_bus:, agent_env: {}, run_id: nil, append_user: true, resume: nil)
         Thread.new do
           lock_for(session_id).synchronize do
             run_once(
@@ -47,7 +50,10 @@ module RelayDaemon
               agent_command: agent_command,
               db_path: db_path,
               event_bus: event_bus,
-              agent_env: agent_env
+              agent_env: agent_env,
+              run_id: run_id,
+              append_user: append_user,
+              resume: resume
             )
           end
         end
@@ -71,17 +77,22 @@ module RelayDaemon
           agent_command: String,
           db_path: String,
           event_bus: EventBus,
-          agent_env: T::Hash[String, String]
+          agent_env: T::Hash[String, String],
+          run_id: T.nilable(String),
+          append_user: T::Boolean,
+          resume: T.nilable(T::Boolean)
         ).void
       end
-      def run_once(session_id:, content:, worktree_path:, sessions_log_dir:, agent_command:, db_path:, event_bus:, agent_env:)
-        run_id = SecureRandom.uuid
+      def run_once(session_id:, content:, worktree_path:, sessions_log_dir:, agent_command:, db_path:, event_bus:, agent_env:, run_id:, append_user:, resume:)
+        run_id ||= SecureRandom.uuid
         db = Db.new(db_path)
         session_store = SessionStore.new(db)
         message_store = MessageStore.new(db, session_store)
-        resume = !message_store.list_for_session(session_id).empty?
+        resume = !message_store.list_for_session(session_id).empty? if resume.nil?
 
-        message_store.append(session_id: session_id, role: "user", content: content, agent_run_id: run_id)
+        if append_user
+          message_store.append(session_id: session_id, role: "user", content: content, agent_run_id: run_id)
+        end
 
         run_dir = File.join(sessions_log_dir, session_id, "runs")
         FileUtils.mkdir_p(run_dir)
