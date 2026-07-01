@@ -39,27 +39,34 @@ RSpec.describe RelayDaemon::Stats do
     db.connection.last_insert_row_id
   end
 
-  def insert_task(status:, created_at: Time.now.utc.iso8601)
+  def insert_session(created_at: Time.now.utc.iso8601)
     repo_id = ensure_repo
-    id = SecureRandom.uuid
+    id = "session-#{SecureRandom.uuid}"
     db.connection.execute(
       <<~SQL,
-        INSERT INTO tasks (id, repo_id, prompt, quality_dial, status, branch, created_at)
-        VALUES (?, ?, 'test prompt', 5, ?, 'relay/test', ?)
+        INSERT INTO chat_sessions (id, repo_id, branch, base_commit, status, created_at)
+        VALUES (?, ?, ?, ?, 'active', ?)
       SQL
-      [id, repo_id, status, created_at]
+      [id, repo_id, "relay/session/#{id}", "0" * 40, created_at]
     )
     id
   end
 
+  def insert_session_test(tests_passed:, created_at: Time.now.utc.iso8601)
+    db.connection.execute(
+      "INSERT INTO session_test_runs (session_id, tests_passed, created_at) VALUES (?, ?, ?)",
+      [insert_session(created_at: created_at), tests_passed, created_at]
+    )
+  end
+
   describe "#compute with empty database" do
-    it "returns zero spend and nil task success rate" do
+    it "returns zero spend and nil outcome success rate" do
       result = stats.compute
       expect(result[:spendUsd]).to eq(0.0)
       expect(result[:frontierCostUsd]).to eq(0.0)
       expect(result[:savedUsd]).to eq(0.0)
-      expect(result[:taskCount]).to eq(0)
-      expect(result[:taskSuccessRate]).to be_nil
+      expect(result[:outcomeCount]).to eq(0)
+      expect(result[:outcomeSuccessRate]).to be_nil
       expect(result[:perModel]).to eq([])
     end
 
@@ -126,25 +133,25 @@ RSpec.describe RelayDaemon::Stats do
     end
   end
 
-  describe "#compute task success rate" do
-    it "is nil when no tasks exist" do
-      expect(stats.compute[:taskSuccessRate]).to be_nil
+  describe "#compute outcome success rate" do
+    it "is nil when no test outcomes exist" do
+      expect(stats.compute[:outcomeSuccessRate]).to be_nil
     end
 
-    it "counts approved tasks as successful" do
-      insert_task(status: "approved")
-      insert_task(status: "approved")
-      insert_task(status: "rejected")
-      insert_task(status: "failed")
+    it "counts passing session test runs as successful" do
+      insert_session_test(tests_passed: 1)
+      insert_session_test(tests_passed: 1)
+      insert_session_test(tests_passed: 0)
+      insert_session_test(tests_passed: nil)
       result = stats.compute
-      expect(result[:taskSuccessRate]).to be_within(0.0001).of(0.5)
+      expect(result[:outcomeSuccessRate]).to be_within(0.0001).of(2.0 / 3.0)
     end
 
-    it "counts total tasks regardless of status for taskCount" do
-      insert_task(status: "queued")
-      insert_task(status: "running")
-      insert_task(status: "approved")
-      expect(stats.compute[:taskCount]).to eq(3)
+    it "counts all session test runs for outcomeCount" do
+      insert_session_test(tests_passed: 1)
+      insert_session_test(tests_passed: 0)
+      insert_session_test(tests_passed: nil)
+      expect(stats.compute[:outcomeCount]).to eq(3)
     end
   end
 
@@ -209,7 +216,7 @@ RSpec.describe "GET /stats via app" do
     expect(last_response.status).to eq(200)
     body = JSON.parse(last_response.body)
     expect(body["range"]).to eq("30d")
-    expect(body).to include("spendUsd", "frontierCostUsd", "savedUsd", "taskCount", "perModel")
+    expect(body).to include("spendUsd", "frontierCostUsd", "savedUsd", "outcomeCount", "perModel")
   end
 
   it "defaults to 30d range" do

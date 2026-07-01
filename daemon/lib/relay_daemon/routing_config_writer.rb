@@ -15,8 +15,8 @@ module RelayDaemon
   class RoutingConfigWriter
     extend T::Sig
 
-    # Tasks-with-tests a model needs before its pass rate is allowed to reorder a
-    # tier (avoids overreacting to one or two early results).
+    # Tested session outcomes a model needs before its pass rate is allowed to
+    # reorder a tier (avoids overreacting to one or two early results).
     MIN_SAMPLES = 5
 
     DEFAULT_BASE_CONFIG = T.let(
@@ -79,7 +79,7 @@ module RelayDaemon
       out = {}
       @eval_store.model_outcomes.each do |o|
         next if o[:passRate].nil?
-        next if o[:tasksWithTests].to_i < @min_samples
+        next if o[:outcomesWithTests].to_i < @min_samples
 
         out[o[:model]] = o[:passRate].to_f
       end

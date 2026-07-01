@@ -26,29 +26,42 @@ RSpec.describe RelayDaemon::RoutingConfigWriter do
     end
   end
 
-  def insert_task(tests_passed:)
-    id = SecureRandom.uuid
+  def insert_session
+    id = "session-#{SecureRandom.uuid}"
     db.connection.execute(
-      "INSERT INTO tasks (id, repo_id, prompt, quality_dial, status, branch, created_at, tests_passed) " \
-      "VALUES (?, ?, 'p', 5, 'needs_review', 'relay/x', ?, ?)",
-      [id, repo_id, Time.now.utc.iso8601, tests_passed]
+      "INSERT INTO chat_sessions (id, repo_id, branch, base_commit, status, created_at) " \
+      "VALUES (?, ?, ?, ?, 'active', ?)",
+      [id, repo_id, "relay/session/#{id}", "0" * 40, Time.now.utc.iso8601]
     )
     id
   end
 
-  def insert_call(model:, task_id:)
+  def insert_call(model:, session_id:, created_at:)
     db.connection.execute(
-      "INSERT INTO llm_calls (task_id, requested_model, routed_model, tier, prompt_tokens, " \
+      "INSERT INTO llm_calls (session_id, requested_model, routed_model, tier, prompt_tokens, " \
       "completion_tokens, cost_usd, frontier_cost_usd, latency_ms, status, created_at) " \
       "VALUES (?, 'requested', ?, 1, 100, 50, 0.001, 0.01, 100, 'success', ?)",
-      [task_id, model, Time.now.utc.iso8601]
+      [session_id, model, created_at]
     )
   end
 
-  # Record `passed` passing and `failed` failing tasks for a model.
+  def insert_session_test(session_id:, tests_passed:, created_at:)
+    db.connection.execute(
+      "INSERT INTO session_test_runs (session_id, tests_passed, created_at) VALUES (?, ?, ?)",
+      [session_id, tests_passed, created_at]
+    )
+  end
+
+  # Record `passed` passing and `failed` failing session outcomes for a model.
   def record(model:, passed: 0, failed: 0)
-    passed.times { insert_call(model: model, task_id: insert_task(tests_passed: 1)) }
-    failed.times { insert_call(model: model, task_id: insert_task(tests_passed: 0)) }
+    (passed + failed).times.with_index do |_, index|
+      session_id = insert_session
+      call_time = format("2026-07-01T10:%02d:00Z", index)
+      test_time = format("2026-07-01T10:%02d:30Z", index)
+      tests_passed = index < passed ? 1 : 0
+      insert_call(model: model, session_id: session_id, created_at: call_time)
+      insert_session_test(session_id: session_id, tests_passed: tests_passed, created_at: test_time)
+    end
   end
 
   describe "#config" do
@@ -73,7 +86,8 @@ RSpec.describe RelayDaemon::RoutingConfigWriter do
     end
 
     it "ignores models with no test results yet" do
-      insert_call(model: "deepseek/deepseek-chat", task_id: insert_task(tests_passed: nil))
+      session_id = insert_session
+      insert_call(model: "deepseek/deepseek-chat", session_id: session_id, created_at: Time.now.utc.iso8601)
       writer = described_class.new(eval_store, min_samples: 1)
       expect(writer.config["tiers"]["1"]).to eq(["moonshotai/kimi-k2", "deepseek/deepseek-chat"])
     end

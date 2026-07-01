@@ -187,11 +187,11 @@ RSpec.describe RelayDaemon::App do
         expect(rows.first["requested_model"]).to eq("claude-3-haiku")
       end
 
-      it "persists optional task and session attribution fields" do
+      it "persists session attribution and leaves historical task attribution empty" do
         repo = RelayDaemon::RepoStore.new(db).create(path: make_git_dir)
         session = RelayDaemon::SessionStore.new(db).create(repo: repo, worktrees_dir: Dir.mktmpdir)
 
-        post_call(valid_body.merge(taskId: nil, sessionId: session["id"]))
+        post_call(valid_body.merge(sessionId: session["id"]))
 
         row = db.connection.execute("SELECT task_id, session_id FROM llm_calls ORDER BY id DESC LIMIT 1").first
         expect(row["task_id"]).to be_nil

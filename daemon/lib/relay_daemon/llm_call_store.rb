@@ -35,7 +35,7 @@ module RelayDaemon
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         SQL
         [
-          data["taskId"],
+          nil,
           data["sessionId"],
           data["requestedModel"],
           data["routedModel"],

@@ -44,7 +44,7 @@ RSpec.describe RelayDaemon::Db do
       expect(cols).to include("id", "path", "name", "test_command", "created_at")
     end
 
-    it "tasks table has the expected columns" do
+    it "keeps the historical tasks table for old call-log joins" do
       cols = db.connection
                .execute("PRAGMA table_info(tasks)")
                .map { |r| r["name"] }

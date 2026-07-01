@@ -128,13 +128,10 @@ describe("Relay router HTTP server", () => {
       })
     });
 
-    expect(taskResponse.status).toBe(200);
+    expect(taskResponse.status).toBe(404);
     expect(sessionResponse.status).toBe(200);
-    expect(sink.records).toHaveLength(2);
-    expect(sink.records[0]?.taskId).toBe("task-abc-123");
-    expect(sink.records[0]?.sessionId).toBeNull();
-    expect(sink.records[1]?.taskId).toBeNull();
-    expect(sink.records[1]?.sessionId).toBe("session-xyz-789");
+    expect(sink.records).toHaveLength(1);
+    expect(sink.records[0]?.sessionId).toBe("session-xyz-789");
   });
 
   it("routes by config, retries non-streaming upstream errors, and records call logs", async () => {
@@ -199,7 +196,6 @@ describe("Relay router HTTP server", () => {
     ]);
     expect(sink.records).toHaveLength(2);
     expect(sink.records[0]).toMatchObject({
-      taskId: null,
       sessionId: null,
       requestedModel: "claude-sonnet-4-5",
       routedModel: "anthropic/claude-sonnet-latest",

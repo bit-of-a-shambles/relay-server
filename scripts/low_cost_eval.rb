@@ -18,7 +18,7 @@ SMOKE_ROUTING_PATH = File.join(ROOT, "router", "scripts", "smoke-routing.json")
 
 Options = Struct.new(
   :real,
-  :tasks,
+  :fixtures,
   :keep,
   :daemon_port,
   :router_port,
@@ -67,7 +67,7 @@ FIXTURES = [
   ),
   Fixture.new(
     id: "behavior-greeting",
-    category: "unit test/task behavior change",
+    category: "unit test behavior change",
     prompt: "Change greeting_for so it trims names, uses guest for nil or blank names, and adds an exclamation mark.",
     editable_files: ["greeting.rb"],
     test_command: "ruby test_greeting.rb",
@@ -189,11 +189,9 @@ FIXTURES = [
 ].freeze
 
 class EvalRunner
-  TERMINAL_STATUSES = %w[needs_review failed approved rejected].freeze
-
   def initialize(options)
     @options = options
-    @fixtures = FIXTURES.first(options.tasks)
+    @fixtures = FIXTURES.first(options.fixtures)
     @token = "relay-eval-#{SecureRandom.hex(12)}"
     @processes = []
   end
@@ -232,7 +230,7 @@ class EvalRunner
         fixtures: checks,
         routingConfig: @options.routing_config,
         maxTokens: @options.max_tokens,
-        nextCommand: "OPENROUTER_API_KEY=... scripts/low_cost_eval.rb --real"
+        nextCommand: "OPENROUTER_API_KEY=... scripts/low_cost_eval.rb --real --fixtures #{@options.fixtures}"
       )
     end
   end
@@ -250,7 +248,7 @@ class EvalRunner
       wait_for_json!("daemon", daemon_url("/healthz"))
       wait_for_json!("router", router_url("/health"))
       repos = register_repos(env_paths[:repos])
-      finished = run_tasks(repos)
+      finished = run_sessions(repos)
       outcomes = get_json(daemon_url("/eval/model-outcomes"), auth: true)
       stats = get_json(daemon_url("/stats"), auth: true)
 
@@ -258,7 +256,7 @@ class EvalRunner
         mode: "real",
         learnRouting: @options.learn_routing,
         maxTokens: @options.max_tokens,
-        taskResults: summarize_tasks(finished),
+        sessionResults: summarize_sessions(finished),
         modelOutcomes: outcomes.fetch("modelOutcomes"),
         stats: stats,
         workdir: @options.keep ? dir : nil,
@@ -372,7 +370,7 @@ class EvalRunner
         FileUtils.mkdir_p(File.dirname(target))
         File.write(target, content)
       end
-      write_eval_task(path, fixture)
+      write_eval_case(path, fixture)
       run_git!(path, "init", "-b", "main")
       run_git!(path, "config", "user.email", "relay-eval@example.invalid")
       run_git!(path, "config", "user.name", "Relay Eval")
@@ -382,9 +380,9 @@ class EvalRunner
     end
   end
 
-  def write_eval_task(path, fixture)
+  def write_eval_case(path, fixture)
     File.write(
-      File.join(path, "eval_task.json"),
+      File.join(path, "eval_case.json"),
       JSON.pretty_generate(
         id: fixture.id,
         category: fixture.category,
@@ -407,43 +405,51 @@ class EvalRunner
     end
   end
 
-  def run_tasks(repos)
+  def run_sessions(repos)
     repos.map do |repo_spec|
       fixture = repo_spec.fetch(:fixture)
-      task = post_json(
-        daemon_url("/tasks"),
-        {
-          repoId: repo_spec.fetch(:repo).fetch("id"),
-          prompt: "#{fixture.category}: #{fixture.prompt}",
-          qualityDial: 0
-        },
+      session = post_json(
+        daemon_url("/sessions"),
+        { repoId: repo_spec.fetch(:repo).fetch("id") },
         auth: true
       )
-      { fixture: fixture, task: wait_for_task(task) }
+      post_json(
+        daemon_url("/sessions/#{session.fetch("id")}/messages"),
+        { content: "#{fixture.category}: #{fixture.prompt}" },
+        auth: true
+      )
+      wait_for_session_reply(session)
+      test_result = post_json(
+        daemon_url("/sessions/#{session.fetch("id")}/test"),
+        { learnFromOutcome: @options.learn_routing },
+        auth: true
+      )
+      { fixture: fixture, session: session, test_result: test_result }
     end
   end
 
-  def summarize_tasks(finished)
+  def summarize_sessions(finished)
     finished.map do |item|
-      task = item.fetch(:task)
+      session = item.fetch(:session)
+      test_result = item.fetch(:test_result)
       fixture = item.fetch(:fixture)
       {
         fixture: fixture.id,
         category: fixture.category,
-        status: task.fetch("status"),
-        testsPassed: task["testsPassed"],
-        costUsd: task["costUsd"],
-        savedUsd: task["savedUsd"]
+        sessionId: session.fetch("id"),
+        status: session.fetch("status"),
+        testsPassed: test_result["testsPassed"]
       }
     end
   end
 
-  def wait_for_task(task)
+  def wait_for_session_reply(session)
     deadline = Time.now + @options.timeout_seconds
     loop do
-      current = get_json(daemon_url("/tasks/#{task.fetch("id")}"), auth: true)
-      return current if TERMINAL_STATUSES.include?(current.fetch("status"))
-      abort "timed out waiting for task #{task.fetch("id")}" if Time.now > deadline
+      messages = get_json(daemon_url("/sessions/#{session.fetch("id")}/messages"), auth: true)
+      return if messages.any? { |message| message["role"] == "assistant" }
+
+      abort "timed out waiting for session #{session.fetch("id")}" if Time.now > deadline
       sleep 1
     end
   end
@@ -534,7 +540,7 @@ end
 
 options = Options.new(
   real: false,
-  tasks: FIXTURES.length,
+  fixtures: FIXTURES.length,
   keep: false,
   daemon_port: free_port,
   router_port: free_port,
@@ -547,8 +553,8 @@ options = Options.new(
 parser = OptionParser.new do |opts|
   opts.banner = "Usage: scripts/low_cost_eval.rb [--dry-run|--real] [options]"
   opts.on("--dry-run", "Validate fixture generation without network calls or token spend") { options.real = false }
-  opts.on("--real", "Run real task-scoped OpenRouter calls through daemon/router") { options.real = true }
-  opts.on("--tasks N", Integer, "Number of fixtures to run from the suite (default: all #{FIXTURES.length})") { |value| options.tasks = value }
+  opts.on("--real", "Run real session-scoped OpenRouter calls through daemon/router") { options.real = true }
+  opts.on("--fixtures N", Integer, "Number of fixtures to run from the suite (default: all #{FIXTURES.length})") { |value| options.fixtures = value }
   opts.on("--keep", "Keep the temporary workdir after a real run") { options.keep = true }
   opts.on("--daemon-port PORT", Integer, "Daemon port (default: random free port)") { |value| options.daemon_port = value }
   opts.on("--router-port PORT", Integer, "Router port (default: random free port)") { |value| options.router_port = value }
@@ -557,13 +563,13 @@ parser = OptionParser.new do |opts|
   end
   opts.on("--learn-routing", "Allow the daemon to rewrite the temp routing config during the run") { options.learn_routing = true }
   opts.on("--max-tokens N", Integer, "Completion cap for each model edit response (default: 900)") { |value| options.max_tokens = value }
-  opts.on("--timeout SECONDS", Integer, "Per-task polling timeout (default: 180)") { |value| options.timeout_seconds = value }
+  opts.on("--timeout SECONDS", Integer, "Per-session polling timeout (default: 180)") { |value| options.timeout_seconds = value }
 end
 
 parser.parse!
 
-abort "--tasks must be positive" unless options.tasks.positive?
-abort "--tasks cannot exceed #{FIXTURES.length}" if options.tasks > FIXTURES.length
+abort "--fixtures must be positive" unless options.fixtures.positive?
+abort "--fixtures cannot exceed #{FIXTURES.length}" if options.fixtures > FIXTURES.length
 abort "--timeout must be positive" unless options.timeout_seconds.positive?
 abort "--max-tokens must be positive" unless options.max_tokens.positive?
 abort "routing config not found: #{options.routing_config}" unless File.file?(options.routing_config)
