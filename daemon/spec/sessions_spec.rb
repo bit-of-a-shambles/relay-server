@@ -233,6 +233,8 @@ RSpec.describe "Sessions API" do
       post "/sessions/#{session["id"]}/test", "", auth_headers
       expect(last_response.status).to eq(200)
       expect(JSON.parse(last_response.body)["testsPassed"]).to be true
+      expect(db.connection.get_first_value("SELECT tests_passed FROM session_test_runs WHERE session_id = ?", [session["id"]]))
+        .to eq(1)
 
       post "/sessions/#{session["id"]}/approve", "", auth_headers
       expect(last_response.status).to eq(200)
@@ -284,6 +286,14 @@ RSpec.describe "Sessions API" do
       post "/sessions/#{session["id"]}/test", "", auth_headers
       expect(last_response.status).to eq(503)
       post "/sessions/#{session["id"]}/approve", "", auth_headers
+      expect(last_response.status).to eq(503)
+    end
+
+    it "returns 503 when the database is missing for test" do
+      session = create_session
+      RelayDaemon::App.set(:stats_db, nil)
+
+      post "/sessions/#{session["id"]}/test", "", auth_headers
       expect(last_response.status).to eq(503)
     end
 

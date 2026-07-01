@@ -49,6 +49,36 @@ RSpec.describe RelayDaemon::EvalStore do
     )
   end
 
+  def insert_session(id:)
+    db.connection.execute(
+      <<~SQL,
+        INSERT INTO chat_sessions (id, repo_id, branch, base_commit, status, created_at)
+        VALUES (?, ?, ?, ?, 'active', ?)
+      SQL
+      [id, repo_id, "relay/session/#{id}", "0" * 40, Time.now.utc.iso8601]
+    )
+    id
+  end
+
+  def insert_session_call(model:, session_id:, created_at:, cost_usd: 0.001)
+    db.connection.execute(
+      <<~SQL,
+        INSERT INTO llm_calls
+          (session_id, requested_model, routed_model, tier, prompt_tokens, completion_tokens,
+           cost_usd, frontier_cost_usd, latency_ms, status, created_at)
+        VALUES (?, 'requested', ?, 1, 100, 50, ?, 0.01, 100, 'success', ?)
+      SQL
+      [session_id, model, cost_usd, created_at]
+    )
+  end
+
+  def insert_session_test(session_id:, tests_passed:, created_at:)
+    db.connection.execute(
+      "INSERT INTO session_test_runs (session_id, tests_passed, created_at) VALUES (?, ?, ?)",
+      [session_id, tests_passed, created_at]
+    )
+  end
+
   describe "#model_outcomes" do
     it "is empty for a fresh database" do
       expect(store.model_outcomes).to eq([])
@@ -100,6 +130,50 @@ RSpec.describe RelayDaemon::EvalStore do
       insert_call(model: "deepseek/deepseek-chat", task_id: b)
       expect(store.model_outcomes.map { |r| r[:model] })
         .to eq(["deepseek/deepseek-chat", "moonshotai/kimi-k2"])
+    end
+
+    it "attributes session calls to the first later session test run" do
+      session = insert_session(id: "session-eval-1")
+      insert_session_call(
+        model: "moonshotai/kimi-k2",
+        session_id: session,
+        created_at: "2026-07-01T10:00:00Z",
+        cost_usd: 0.001
+      )
+      insert_session_test(
+        session_id: session,
+        tests_passed: 1,
+        created_at: "2026-07-01T10:01:00Z"
+      )
+      insert_session_call(
+        model: "moonshotai/kimi-k2",
+        session_id: session,
+        created_at: "2026-07-01T10:02:00Z",
+        cost_usd: 0.002
+      )
+      insert_session_test(
+        session_id: session,
+        tests_passed: 0,
+        created_at: "2026-07-01T10:03:00Z"
+      )
+
+      rows = db.connection.execute(
+        "SELECT call_id, tests_passed, outcome_tested_at FROM eval_dataset WHERE session_id = ? ORDER BY call_created_at",
+        [session]
+      )
+      expect(rows.map { |row| row["tests_passed"] }).to eq([1, 0])
+      expect(rows.map { |row| row["outcome_tested_at"] }).to eq([
+        "2026-07-01T10:01:00Z",
+        "2026-07-01T10:03:00Z"
+      ])
+
+      row = store.model_outcomes.find { |r| r[:model] == "moonshotai/kimi-k2" }
+      expect(row[:calls]).to eq(2)
+      expect(row[:tasks]).to eq(2)
+      expect(row[:tasksWithTests]).to eq(2)
+      expect(row[:tasksPassed]).to eq(1)
+      expect(row[:passRate]).to eq(0.5)
+      expect(row[:spendUsd]).to be_within(0.0001).of(0.003)
     end
   end
 end

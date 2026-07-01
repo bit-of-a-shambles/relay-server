@@ -330,7 +330,7 @@ module RelayDaemon
         agent_command: agent_command,
         db_path: settings.relay_config.db_path,
         event_bus: settings.event_bus,
-        agent_env: { "RELAY_SESSION_ID" => session["id"] },
+        router_base_url: settings.relay_config.router_base_url,
         run_id: run_id,
         append_user: false,
         resume: resume
@@ -358,13 +358,17 @@ module RelayDaemon
       halt 503, JSON.generate({ error: "session store not configured" }) if session_store.nil?
       repo_store = settings.repo_store
       halt 503, JSON.generate({ error: "repo store not configured" }) if repo_store.nil?
+      db = settings.stats_db
+      halt 503, JSON.generate({ error: "database not configured" }) if db.nil?
       session = session_store.find(params[:id])
       halt 404, JSON.generate({ error: "not found" }) if session.nil?
       repo = repo_store.find(session["repoId"])
       halt 422, JSON.generate({ error: "repo not found" }) if repo.nil?
 
       test_command = repo["testCommand"]
+      test_store = RelayDaemon::SessionTestStore.new(db, session_store)
       if test_command.nil? || test_command.empty?
+        test_store.record(session_id: session["id"], tests_passed: nil)
         JSON.generate({ "testsPassed" => nil })
       else
         log_path = File.join(settings.relay_config.agent_log_dir, "sessions", session["id"], "test.log")
@@ -372,7 +376,9 @@ module RelayDaemon
         pid = Process.spawn("sh", "-c", test_command, out: [log_path, "a"], err: [:child, :out],
                             chdir: File.join(settings.relay_config.worktrees_dir, session["id"]))
         _, test_status = Process.wait2(pid)
-        JSON.generate({ "testsPassed" => test_status.success? })
+        tests_passed = test_status.success?
+        test_store.record(session_id: session["id"], tests_passed: tests_passed)
+        JSON.generate({ "testsPassed" => tests_passed })
       end
     end
 

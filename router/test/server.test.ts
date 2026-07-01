@@ -86,7 +86,7 @@ describe("Relay router HTTP server", () => {
     });
   });
 
-  it("stamps the task id from /api/task/:taskId/v1/messages onto call records", async () => {
+  it("stamps task and session ids from scoped message routes onto call records", async () => {
     const sink = new MemoryCallLogSink();
     const upstream = await createTestServer((request, response) => {
       response.writeHead(200, { "Content-Type": "application/json" });
@@ -109,7 +109,7 @@ describe("Relay router HTTP server", () => {
     });
     openServers.push(router);
 
-    const response = await fetch(`${router.baseUrl}/api/task/task-abc-123/v1/messages`, {
+    const taskResponse = await fetch(`${router.baseUrl}/api/task/task-abc-123/v1/messages`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -118,10 +118,23 @@ describe("Relay router HTTP server", () => {
         messages: [{ role: "user", content: "hi" }]
       })
     });
+    const sessionResponse = await fetch(`${router.baseUrl}/api/session/session-xyz-789/v1/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-5",
+        max_tokens: 50,
+        messages: [{ role: "user", content: "hi again" }]
+      })
+    });
 
-    expect(response.status).toBe(200);
-    expect(sink.records).toHaveLength(1);
+    expect(taskResponse.status).toBe(200);
+    expect(sessionResponse.status).toBe(200);
+    expect(sink.records).toHaveLength(2);
     expect(sink.records[0]?.taskId).toBe("task-abc-123");
+    expect(sink.records[0]?.sessionId).toBeNull();
+    expect(sink.records[1]?.taskId).toBeNull();
+    expect(sink.records[1]?.sessionId).toBe("session-xyz-789");
   });
 
   it("routes by config, retries non-streaming upstream errors, and records call logs", async () => {
@@ -187,6 +200,7 @@ describe("Relay router HTTP server", () => {
     expect(sink.records).toHaveLength(2);
     expect(sink.records[0]).toMatchObject({
       taskId: null,
+      sessionId: null,
       requestedModel: "claude-sonnet-4-5",
       routedModel: "anthropic/claude-sonnet-latest",
       tier: 2,

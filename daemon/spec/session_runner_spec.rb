@@ -69,6 +69,23 @@ RSpec.describe RelayDaemon::SessionRunner do
     expect(agent_events.map { |event| event["payload"]["line"] }).to include("prompt=log me")
   end
 
+  it "sets session-scoped routing environment for the agent process" do
+    described_class.run_async(
+      session_id: session["id"],
+      content: "env please",
+      worktree_path: worktree_path,
+      sessions_log_dir: sessions_log_dir,
+      agent_command: agent_command,
+      db_path: db_path,
+      event_bus: event_bus,
+      router_base_url: "http://127.0.0.1:7778/api/"
+    ).join
+
+    expect(File.read(File.join(worktree_path, "env_session_id.txt"))).to eq(session["id"])
+    expect(File.read(File.join(worktree_path, "env_anthropic_base.txt")))
+      .to eq("http://127.0.0.1:7778/api/session/#{session["id"]}")
+  end
+
   it "stores a fallback assistant message when the agent produces no output" do
     described_class.run_async(
       session_id: session["id"],

@@ -172,4 +172,51 @@ module RelayDaemon
       }
     end
   end
+
+  class SessionTestStore
+    extend T::Sig
+
+    sig { params(db: Db, session_store: SessionStore).void }
+    def initialize(db, session_store)
+      @db = db
+      @session_store = session_store
+    end
+
+    sig do
+      params(session_id: String, tests_passed: T.nilable(T::Boolean))
+        .returns(T::Hash[String, T.untyped])
+    end
+    def record(session_id:, tests_passed:)
+      raise ArgumentError, "session not found" unless @session_store.find(session_id)
+
+      now = Time.now.utc.iso8601
+      @db.connection.execute(
+        "INSERT INTO session_test_runs (session_id, tests_passed, created_at)
+         VALUES (?, ?, ?)",
+        [session_id, tests_passed.nil? ? nil : (tests_passed ? 1 : 0), now]
+      )
+      T.must(find(@db.connection.last_insert_row_id))
+    end
+
+    sig { params(id: Integer).returns(T.nilable(T::Hash[String, T.untyped])) }
+    def find(id)
+      row = @db.connection.get_first_row(
+        "SELECT id, session_id, tests_passed, created_at FROM session_test_runs WHERE id = ?",
+        [id]
+      )
+      row ? row_to_h(row) : nil
+    end
+
+    private
+
+    sig { params(row: T::Hash[String, T.untyped]).returns(T::Hash[String, T.untyped]) }
+    def row_to_h(row)
+      {
+        "id" => row["id"],
+        "sessionId" => row["session_id"],
+        "testsPassed" => row["tests_passed"].nil? ? nil : row["tests_passed"] == 1,
+        "createdAt" => row["created_at"]
+      }
+    end
+  end
 end

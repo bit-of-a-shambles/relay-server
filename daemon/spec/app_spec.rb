@@ -5,6 +5,8 @@ require "relay_daemon/app"
 require "relay_daemon/config"
 require "relay_daemon/db"
 require "relay_daemon/llm_call_store"
+require "relay_daemon/repo_store"
+require "relay_daemon/session_store"
 require "tmpdir"
 
 RSpec.describe RelayDaemon::App do
@@ -183,6 +185,17 @@ RSpec.describe RelayDaemon::App do
         rows = db.connection.execute("SELECT * FROM llm_calls")
         expect(rows.length).to eq(1)
         expect(rows.first["requested_model"]).to eq("claude-3-haiku")
+      end
+
+      it "persists optional task and session attribution fields" do
+        repo = RelayDaemon::RepoStore.new(db).create(path: make_git_dir)
+        session = RelayDaemon::SessionStore.new(db).create(repo: repo, worktrees_dir: Dir.mktmpdir)
+
+        post_call(valid_body.merge(taskId: nil, sessionId: session["id"]))
+
+        row = db.connection.execute("SELECT task_id, session_id FROM llm_calls ORDER BY id DESC LIMIT 1").first
+        expect(row["task_id"]).to be_nil
+        expect(row["session_id"]).to eq(session["id"])
       end
     end
 
