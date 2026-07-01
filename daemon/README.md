@@ -85,6 +85,19 @@ with env `ANTHROPIC_BASE_URL=http://127.0.0.1:7778/api` and a dummy
 sets `RELAY_TASK_ID` in the agent's environment. Tests always use a fake
 Ruby script instead (see `spec/support/`).
 
+## Session agent resume
+
+Track G sessions keep one conversation identity per repo session. Current
+Claude Code help exposes two relevant flags:
+
+- First run in a Relay chat session: append `--session-id <session-uuid>`.
+- Later runs in that same Relay chat session: append `--resume <session-uuid>`.
+
+`SessionRunner` uses that contract while still replacing `{prompt}` in
+`RELAY_AGENT_COMMAND`. Tests use `spec/support/fake_session_agent.rb` to prove
+the first run receives `--session-id` and subsequent runs receive `--resume`
+without invoking the real Claude CLI.
+
 ## Acceptance walkthrough
 
 Proves the full Phase 3 lifecycle with HTTP + websocket clients alone.
