@@ -29,6 +29,10 @@ export type RoutingConfigLoader = {
   load: () => RoutingConfig;
 };
 
+// Cross-reference: mirrored as RelayDaemon::ModelCatalog::DEFAULT_CONFIG in
+// daemon/lib/relay_daemon/model_catalog.rb (tiers + frontierModel only, since
+// that's all GET /models exposes). Keep the two in sync — check both files
+// when changing either.
 export const DEFAULT_ROUTING_CONFIG: RoutingConfig = {
   tiers: {
     "0": ["qwen/qwen3-coder-small"],
