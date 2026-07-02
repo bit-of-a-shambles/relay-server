@@ -15,6 +15,7 @@ import {
   createRoutingConfigLoader,
   DEFAULT_ROUTING_CONFIG,
   estimateFrontierCostUsd,
+  resolveUpstream,
   type RoutingConfig
 } from "../src/routing.js";
 import type { AnthropicMessagesRequest } from "../src/types.js";
@@ -155,7 +156,8 @@ describe("routing", () => {
       tiers: { "0": ["cheap"] },
       rules: [{ when: "requestedModel contains 'haiku'", tier: 0 }],
       qualityDial: { default: 5 },
-      frontierModel: "cheap"
+      frontierModel: "cheap",
+      providers: {}
     };
     expect(() => chooseRoute(request(), noMatchedRule)).toThrow("default rule");
 
@@ -163,9 +165,215 @@ describe("routing", () => {
       tiers: { "0": [] },
       rules: [{ when: "default", tier: 0 }],
       qualityDial: { default: 5 },
-      frontierModel: "cheap"
+      frontierModel: "cheap",
+      providers: {}
     };
     expect(() => chooseRoute(request(), emptyTier)).toThrow("has no models");
+  });
+
+  it("defaults providers to {} when absent from the config", () => {
+    expect(DEFAULT_ROUTING_CONFIG.providers).toEqual({});
+
+    const dir = mkdtempSync(join(tmpdir(), "relay-routing-providers-absent-"));
+    const path = join(dir, "routing.json");
+    try {
+      writeFileSync(
+        path,
+        JSON.stringify({
+          tiers: { "0": ["cheap"] },
+          rules: [{ when: "default", tier: 0 }]
+        })
+      );
+      expect(createRoutingConfigLoader(path).load().providers).toEqual({});
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("parses a valid providers map with inline apiKey, apiKeyEnv, and keyless entries", () => {
+    const dir = mkdtempSync(join(tmpdir(), "relay-routing-providers-valid-"));
+    const path = join(dir, "routing.json");
+    try {
+      writeFileSync(
+        path,
+        JSON.stringify({
+          tiers: { "0": ["cheap"] },
+          rules: [{ when: "default", tier: 0 }],
+          providers: {
+            myvllm: { baseUrl: "http://localhost:8000/v1" },
+            together_ai: { baseUrl: "https://api.together.xyz/v1", apiKey: "sk-inline" },
+            "fire-works": { baseUrl: "https://api.fireworks.ai/inference/v1", apiKeyEnv: "FIREWORKS_KEY" }
+          }
+        })
+      );
+
+      expect(createRoutingConfigLoader(path).load().providers).toEqual({
+        myvllm: { baseUrl: "http://localhost:8000/v1" },
+        together_ai: { baseUrl: "https://api.together.xyz/v1", apiKey: "sk-inline" },
+        "fire-works": { baseUrl: "https://api.fireworks.ai/inference/v1", apiKeyEnv: "FIREWORKS_KEY" }
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects invalid providers maps", () => {
+    const dir = mkdtempSync(join(tmpdir(), "relay-routing-providers-invalid-"));
+    const path = join(dir, "routing.json");
+
+    try {
+      for (const invalid of [
+        { tiers: { "0": ["m"] }, rules: [{ when: "default", tier: 0 }], providers: [] },
+        { tiers: { "0": ["m"] }, rules: [{ when: "default", tier: 0 }], providers: null },
+        {
+          tiers: { "0": ["m"] },
+          rules: [{ when: "default", tier: 0 }],
+          providers: { "Bad Name": { baseUrl: "https://x.example" } }
+        },
+        {
+          tiers: { "0": ["m"] },
+          rules: [{ when: "default", tier: 0 }],
+          providers: { openrouter: { baseUrl: "https://x.example" } }
+        },
+        {
+          tiers: { "0": ["m"] },
+          rules: [{ when: "default", tier: 0 }],
+          providers: { myvllm: "not-an-object" }
+        },
+        {
+          tiers: { "0": ["m"] },
+          rules: [{ when: "default", tier: 0 }],
+          providers: { myvllm: { baseUrl: "ftp://x.example" } }
+        },
+        {
+          tiers: { "0": ["m"] },
+          rules: [{ when: "default", tier: 0 }],
+          providers: { myvllm: {} }
+        }
+      ]) {
+        writeFileSync(path, JSON.stringify(invalid));
+        expect(() => createRoutingConfigLoader(path).load()).toThrow();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("parses the pre-existing example routing config unchanged with providers defaulting to {}", () => {
+    const exampleConfig: unknown = JSON.parse(
+      readFileSync(join(import.meta.dirname, "..", "routing.example.json"), "utf8")
+    );
+
+    const dir = mkdtempSync(join(tmpdir(), "relay-routing-example-"));
+    const path = join(dir, "routing.json");
+    try {
+      writeFileSync(path, JSON.stringify(exampleConfig));
+      const parsed = createRoutingConfigLoader(path).load();
+
+      expect(parsed).toEqual({
+        ...(exampleConfig as object),
+        providers: {}
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("resolveUpstream", () => {
+  const config: RoutingConfig = {
+    tiers: { "0": ["cheap"] },
+    rules: [{ when: "default", tier: 0 }],
+    qualityDial: { default: 5 },
+    frontierModel: "cheap",
+    providers: {
+      myvllm: { baseUrl: "http://localhost:8000/v1" },
+      withkey: { baseUrl: "https://api.example.com/v1", apiKey: "sk-inline" },
+      withenv: { baseUrl: "https://api.example.com/v1", apiKeyEnv: "RESOLVE_UPSTREAM_TEST_KEY" }
+    }
+  };
+  const options = { openRouterBaseUrl: "https://openrouter.ai/api/v1", openRouterApiKey: "sk-or" };
+
+  it("returns the built-in openrouter upstream when the model has no '::'", () => {
+    expect(resolveUpstream("moonshotai/kimi-k2", config, options)).toEqual({
+      baseUrl: "https://openrouter.ai/api/v1",
+      apiKey: "sk-or",
+      model: "moonshotai/kimi-k2"
+    });
+  });
+
+  it("resolves a keyless custom provider", () => {
+    expect(resolveUpstream("myvllm::qwen3-32b", config, options)).toEqual({
+      baseUrl: "http://localhost:8000/v1",
+      apiKey: undefined,
+      model: "qwen3-32b"
+    });
+  });
+
+  it("resolves a custom provider with an inline apiKey", () => {
+    expect(resolveUpstream("withkey::some-model", config, options)).toEqual({
+      baseUrl: "https://api.example.com/v1",
+      apiKey: "sk-inline",
+      model: "some-model"
+    });
+  });
+
+  it("resolves a custom provider's apiKey from apiKeyEnv", () => {
+    process.env.RESOLVE_UPSTREAM_TEST_KEY = "env-secret";
+    try {
+      expect(resolveUpstream("withenv::some-model", config, options)).toEqual({
+        baseUrl: "https://api.example.com/v1",
+        apiKey: "env-secret",
+        model: "some-model"
+      });
+    } finally {
+      delete process.env.RESOLVE_UPSTREAM_TEST_KEY;
+    }
+  });
+
+  it("throws for an unknown provider name", () => {
+    expect(() => resolveUpstream("unknown::some-model", config, options)).toThrow(
+      "Unknown provider 'unknown'"
+    );
+  });
+});
+
+describe("chooseRoute direct '::' routing", () => {
+  const config: RoutingConfig = {
+    tiers: { "0": ["cheap"], "1": ["default-model"], "2": ["myvllm::literal-model"] },
+    rules: [{ when: "default", tier: 1 }],
+    qualityDial: { default: 5 },
+    frontierModel: "default-model",
+    providers: {
+      myvllm: { baseUrl: "http://localhost:8000/v1" }
+    }
+  };
+
+  it("routes a '::' model that isn't a configured tier directly to itself using the default rule's tier", () => {
+    expect(chooseRoute(request({ model: "myvllm::qwen3-32b" }), config)).toMatchObject({
+      requestedModel: "myvllm::qwen3-32b",
+      routedModel: "myvllm::qwen3-32b",
+      tier: 1
+    });
+  });
+
+  it("still prefers an exact tier match over direct '::' routing", () => {
+    expect(chooseRoute(request({ model: "myvllm::literal-model" }), config)).toMatchObject({
+      requestedModel: "myvllm::literal-model",
+      routedModel: "myvllm::literal-model",
+      tier: 2
+    });
+  });
+
+  it("throws when a config without a default rule is used for direct '::' routing", () => {
+    const noDefault: RoutingConfig = {
+      tiers: { "0": ["cheap"] },
+      rules: [{ when: "requestedModel contains 'haiku'", tier: 0 }],
+      qualityDial: { default: 5 },
+      frontierModel: "cheap",
+      providers: { myvllm: { baseUrl: "http://localhost:8000/v1" } }
+    };
+    expect(() => chooseRoute(request({ model: "myvllm::llama" }), noDefault)).toThrow("default rule");
   });
 });
 
