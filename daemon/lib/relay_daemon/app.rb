@@ -434,6 +434,31 @@ module RelayDaemon
       JSON.generate(T.must(session_store.find(session["id"])))
     end
 
+    post "/sessions/:id/discard" do
+      content_type :json
+
+      session_store = settings.session_store
+      halt 503, JSON.generate({ error: "session store not configured" }) if session_store.nil?
+      repo_store = settings.repo_store
+      halt 503, JSON.generate({ error: "repo store not configured" }) if repo_store.nil?
+      session = session_store.find(params[:id])
+      halt 404, JSON.generate({ error: "not found" }) if session.nil?
+      halt 409, JSON.generate({ error: "already discarded" }) if session["status"] == "discarded"
+      if RelayDaemon::SessionRunner.running?(session["id"])
+        halt 409, JSON.generate({ error: "agent run in progress" })
+      end
+      repo = repo_store.find(session["repoId"])
+      halt 422, JSON.generate({ error: "repo not found" }) if repo.nil?
+
+      git = RelayDaemon::Git.new(repo["path"])
+      git.worktree_remove(File.join(settings.relay_config.worktrees_dir, session["id"]))
+      git.branch_delete(session["branch"])
+
+      discarded = session_store.discard(session["id"])
+      settings.event_bus.publish(type: "session.updated", payload: { "sessionId" => session["id"] })
+      JSON.generate(T.must(discarded))
+    end
+
     not_found do
       content_type :json
       status 404

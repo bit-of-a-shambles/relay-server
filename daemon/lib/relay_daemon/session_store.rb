@@ -86,6 +86,17 @@ module RelayDaemon
       )
     end
 
+    # Marks a session as discarded. The row is kept (not deleted) so stats
+    # and eval joins over historical llm_calls/messages keep working.
+    sig { params(id: String).returns(T.nilable(T::Hash[String, T.untyped])) }
+    def discard(id)
+      @db.connection.execute(
+        "UPDATE chat_sessions SET status = 'discarded' WHERE id = ?",
+        [id]
+      )
+      find(id)
+    end
+
     private
 
     sig { params(row: T::Hash[String, T.untyped]).returns(T::Hash[String, T.untyped]) }

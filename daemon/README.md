@@ -89,6 +89,7 @@ POST /sessions/:id/messages
 GET  /sessions/:id/diff
 POST /sessions/:id/test
 POST /sessions/:id/approve
+POST /sessions/:id/discard
 
 GET  /stats?range=30d
 GET  /eval/model-outcomes
@@ -97,7 +98,11 @@ WS   /ws?token=...
 ```
 
 Relay keeps one active chat session per repo. Posting `/sessions` repeatedly
-for the same repo returns that active session.
+for the same repo returns that active session. `POST /sessions/:id/discard`
+abandons a session: it removes the session's worktree and branch, marks the
+row `discarded` (kept for stats/eval history), and frees the repo so a new
+session can be opened. It 409s if the session is already discarded or an
+agent run is currently in flight for it.
 
 ## Pairing
 
