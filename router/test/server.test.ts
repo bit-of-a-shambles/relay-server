@@ -132,6 +132,7 @@ describe("Relay router HTTP server", () => {
     expect(sessionResponse.status).toBe(200);
     expect(sink.records).toHaveLength(1);
     expect(sink.records[0]?.sessionId).toBe("session-xyz-789");
+    expect(sink.records[0]?.provider).toBe("openrouter");
   });
 
   it("routes escalated session messages one tier up with test_failure_retry", async () => {
@@ -179,6 +180,7 @@ describe("Relay router HTTP server", () => {
       sessionId: "session-escalated-1",
       requestedModel: "claude-sonnet-4-5",
       routedModel: "anthropic/claude-sonnet-latest",
+      provider: "openrouter",
       tier: 2,
       escalationReason: "test_failure_retry"
     });
@@ -249,6 +251,7 @@ describe("Relay router HTTP server", () => {
       sessionId: null,
       requestedModel: "claude-sonnet-4-5",
       routedModel: "anthropic/claude-sonnet-latest",
+      provider: "openrouter",
       tier: 2,
       escalationReason: null,
       status: "error",
@@ -257,6 +260,7 @@ describe("Relay router HTTP server", () => {
     expect(sink.records[1]).toMatchObject({
       requestedModel: "claude-sonnet-4-5",
       routedModel: "anthropic/claude-opus-latest",
+      provider: "openrouter",
       tier: 3,
       escalationReason: "upstream_error_retry",
       status: "success",
@@ -341,6 +345,7 @@ describe("Relay router HTTP server", () => {
     expect(sink.records).toHaveLength(1);
     expect(sink.records[0]).toMatchObject({
       routedModel: "anthropic/claude-opus-latest",
+      provider: "openrouter",
       costUsd: null,
       completionTokens: 0
     });
@@ -394,6 +399,120 @@ describe("Relay router HTTP server", () => {
     });
   });
 
+  it("dispatches non-streaming requests to a keyless custom provider with the bare model, no auth header, and no OpenRouter headers", async () => {
+    const sink = new MemoryCallLogSink();
+    const upstream = await createTestServer((request, response) => {
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(
+        JSON.stringify({
+          id: "chatcmpl_custom",
+          model: "qwen3-32b",
+          choices: [
+            {
+              index: 0,
+              finish_reason: "stop",
+              message: { role: "assistant", content: "Custom done" }
+            }
+          ],
+          usage: { prompt_tokens: 7, completion_tokens: 2, total_tokens: 9 }
+        })
+      );
+    });
+    openServers.push(upstream);
+
+    const router = await listenRouterWithOptions({
+      openRouterApiKey: undefined,
+      callLogSink: sink,
+      routingConfigLoader: {
+        load: () => ({
+          ...DEFAULT_ROUTING_CONFIG,
+          providers: { myvllm: { baseUrl: upstream.baseUrl } }
+        })
+      }
+    });
+    openServers.push(router);
+
+    const response = await fetch(`${router.baseUrl}/api/v1/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "myvllm::qwen3-32b",
+        max_tokens: 100,
+        messages: [{ role: "user", content: "Say done" }]
+      })
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      content: [{ type: "text", text: "Custom done" }]
+    });
+
+    expect(upstream.requests).toHaveLength(1);
+    expect(upstream.requests[0]?.url).toBe("/chat/completions");
+    expect(upstream.requests[0]?.headers.authorization).toBeUndefined();
+    expect(upstream.requests[0]?.headers["http-referer"]).toBeUndefined();
+    expect(upstream.requests[0]?.headers["x-openrouter-title"]).toBeUndefined();
+
+    const upstreamBody = JSON.parse(upstream.requests[0]?.body ?? "{}") as Record<string, unknown>;
+    expect(upstreamBody).toMatchObject({ model: "qwen3-32b" });
+
+    expect(sink.records).toHaveLength(1);
+    expect(sink.records[0]).toMatchObject({
+      requestedModel: "myvllm::qwen3-32b",
+      routedModel: "myvllm::qwen3-32b",
+      provider: "myvllm"
+    });
+  });
+
+  it("dispatches streaming requests to a custom provider with an inline apiKey", async () => {
+    const upstream = await createTestServer((request, response) => {
+      response.writeHead(200, { "Content-Type": "text/event-stream" });
+      response.end("data: [DONE]\n\n");
+    });
+    openServers.push(upstream);
+
+    const sink = new MemoryCallLogSink();
+    const router = await listenRouterWithOptions({
+      openRouterApiKey: undefined,
+      callLogSink: sink,
+      routingConfigLoader: {
+        load: () => ({
+          ...DEFAULT_ROUTING_CONFIG,
+          providers: { myvllm: { baseUrl: upstream.baseUrl, apiKey: "custom-secret" } }
+        })
+      }
+    });
+    openServers.push(router);
+
+    const response = await fetch(`${router.baseUrl}/api/v1/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "myvllm::qwen3-32b",
+        max_tokens: 100,
+        stream: true,
+        messages: [{ role: "user", content: "Say hi" }]
+      })
+    });
+
+    expect(response.status).toBe(200);
+    expect(upstream.requests).toHaveLength(1);
+    expect(upstream.requests[0]?.url).toBe("/chat/completions");
+    expect(upstream.requests[0]?.headers.authorization).toBe("Bearer custom-secret");
+    expect(upstream.requests[0]?.headers["http-referer"]).toBeUndefined();
+    expect(upstream.requests[0]?.headers["x-openrouter-title"]).toBeUndefined();
+
+    const upstreamBody = JSON.parse(upstream.requests[0]?.body ?? "{}") as Record<string, unknown>;
+    expect(upstreamBody).toMatchObject({ model: "qwen3-32b", stream: true });
+
+    expect(sink.records).toHaveLength(1);
+    expect(sink.records[0]).toMatchObject({
+      requestedModel: "myvllm::qwen3-32b",
+      routedModel: "myvllm::qwen3-32b",
+      provider: "myvllm"
+    });
+  });
+
   it("records streaming upstream successes and failures", async () => {
     const successSink = new MemoryCallLogSink();
     const upstream = await createTestServer((request, response) => {
@@ -422,7 +541,8 @@ describe("Relay router HTTP server", () => {
     expect(successSink.records).toHaveLength(1);
     expect(successSink.records[0]).toMatchObject({
       status: "success",
-      routedModel: "moonshotai/kimi-k2"
+      routedModel: "moonshotai/kimi-k2",
+      provider: "openrouter"
     });
 
     const failureSink = new MemoryCallLogSink();
@@ -446,7 +566,8 @@ describe("Relay router HTTP server", () => {
     expect(failureSink.records).toHaveLength(1);
     expect(failureSink.records[0]).toMatchObject({
       status: "error",
-      errorMessage: "stream failed"
+      errorMessage: "stream failed",
+      provider: "openrouter"
     });
   });
 
@@ -472,7 +593,12 @@ describe("Relay router HTTP server", () => {
 
     const missingKey = await fetch(`${routerWithoutKey.baseUrl}/api/v1/messages`, {
       method: "POST",
-      body: "{}"
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-5",
+        max_tokens: 100,
+        messages: [{ role: "user", content: "Say done" }]
+      })
     });
     expect(missingKey.status).toBe(500);
     await expect(missingKey.json()).resolves.toMatchObject({

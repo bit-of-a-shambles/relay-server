@@ -4,6 +4,7 @@ export type LlmCallRecord = {
   sessionId: string | null;
   requestedModel: string;
   routedModel: string;
+  provider: string;
   tier: number;
   promptTokens: number;
   completionTokens: number;

@@ -451,6 +451,7 @@ const sampleRecord: LlmCallRecord = {
   sessionId: "session-1",
   requestedModel: "claude-haiku",
   routedModel: "moonshotai/kimi-k2",
+  provider: "openrouter",
   tier: 1,
   promptTokens: 100,
   completionTokens: 50,
