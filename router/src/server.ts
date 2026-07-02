@@ -10,6 +10,8 @@ import {
   chooseRoute,
   createRoutingConfigLoader,
   estimateFrontierCostUsd,
+  resolveUpstream,
+  type ResolvedUpstream,
   type RoutingConfigLoader,
   type RoutingDecision
 } from "./routing.js";
@@ -99,7 +101,18 @@ async function handleRequest(
   }
   const attribution = messagesRoute;
 
-  if (options.openRouterApiKey === undefined || options.openRouterApiKey.length === 0) {
+  const body = await readBody(request, DEFAULT_MAX_BODY_BYTES);
+  const anthropicRequest = parseAnthropicRequest(body);
+  const route = chooseRoute(
+    anthropicRequest,
+    options.routingConfigLoader.load(),
+    attribution.escalated ? "test_failure_retry" : null
+  );
+
+  if (
+    providerNameFor(route.routedModel) === OPENROUTER_PROVIDER_NAME &&
+    (options.openRouterApiKey === undefined || options.openRouterApiKey.length === 0)
+  ) {
     sendJson(response, 500, {
       type: "error",
       error: {
@@ -110,16 +123,8 @@ async function handleRequest(
     return;
   }
 
-  const body = await readBody(request, DEFAULT_MAX_BODY_BYTES);
-  const anthropicRequest = parseAnthropicRequest(body);
-  const route = chooseRoute(
-    anthropicRequest,
-    options.routingConfigLoader.load(),
-    attribution.escalated ? "test_failure_retry" : null
-  );
-
   if (anthropicRequest.stream === true) {
-    const upstreamResponse = await callOpenRouter(
+    const upstreamResponse = await callUpstream(
       anthropicRequest,
       route,
       options,
@@ -233,7 +238,7 @@ async function executeNonStreamingWithRetry(
   let lastError = "OpenRouter request failed";
 
   for (const route of uniqueRoutes(attempts)) {
-    const attempt = await callOpenRouter(anthropicRequest, route, options, fetchImpl);
+    const attempt = await callUpstream(anthropicRequest, route, options, fetchImpl);
     const latencyMs = Date.now() - attempt.startedAt;
 
     if (!attempt.response.ok) {
@@ -269,25 +274,47 @@ async function executeNonStreamingWithRetry(
   return { response: undefined, status: lastStatus, errorMessage: lastError };
 }
 
-async function callOpenRouter(
+const OPENROUTER_PROVIDER_NAME = "openrouter";
+
+// Name of the upstream that will actually receive the request: the built-in
+// openrouter path when the routed model has no `name::` prefix, otherwise
+// the custom provider name from the prefix. `openrouter` is a reserved
+// provider name (routing.ts), so a prefixed model id is never mistaken for
+// the built-in path.
+function providerNameFor(modelId: string): string {
+  const separatorIndex = modelId.indexOf("::");
+  return separatorIndex === -1 ? OPENROUTER_PROVIDER_NAME : modelId.slice(0, separatorIndex);
+}
+
+async function callUpstream(
   anthropicRequest: AnthropicMessagesRequest,
   route: RoutingDecision,
   options: RouterServerOptions,
   fetchImpl: typeof fetch
 ): Promise<UpstreamAttempt> {
   const startedAt = Date.now();
+  const isOpenRouter = providerNameFor(route.routedModel) === OPENROUTER_PROVIDER_NAME;
+  const upstream: ResolvedUpstream = resolveUpstream(route.routedModel, options.routingConfigLoader.load(), {
+    openRouterBaseUrl: options.openRouterBaseUrl,
+    openRouterApiKey: options.openRouterApiKey
+  });
   const openAIRequest = toOpenAIRequest(anthropicRequest, {
-    model: route.routedModel,
+    model: upstream.model,
     maxCompletionTokens: options.maxCompletionTokens
   });
-  const response = await fetchImpl(`${trimRight(options.openRouterBaseUrl, "/")}/chat/completions`, {
+
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (upstream.apiKey !== undefined && upstream.apiKey.length > 0) {
+    headers.Authorization = `Bearer ${upstream.apiKey}`;
+  }
+  if (isOpenRouter) {
+    headers["HTTP-Referer"] = options.referer;
+    headers["X-OpenRouter-Title"] = options.title;
+  }
+
+  const response = await fetchImpl(`${trimRight(upstream.baseUrl, "/")}/chat/completions`, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${options.openRouterApiKey}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": options.referer,
-      "X-OpenRouter-Title": options.title
-    },
+    headers,
     body: JSON.stringify(openAIRequest)
   });
 
@@ -317,6 +344,7 @@ async function recordCall(
     sessionId: attribution.sessionId,
     requestedModel: route.requestedModel,
     routedModel: route.routedModel,
+    provider: providerNameFor(route.routedModel),
     tier: route.tier,
     promptTokens: route.promptTokens,
     completionTokens,

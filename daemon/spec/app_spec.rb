@@ -142,6 +142,7 @@ RSpec.describe RelayDaemon::App do
       {
         requestedModel: "claude-3-haiku",
         routedModel: "moonshotai/kimi-k2",
+        provider: "openrouter",
         tier: 1,
         promptTokens: 100,
         completionTokens: 50,
@@ -187,6 +188,11 @@ RSpec.describe RelayDaemon::App do
         expect(rows.first["requested_model"]).to eq("claude-3-haiku")
       end
 
+      it "persists the provider column" do
+        row = db.connection.execute("SELECT provider FROM llm_calls ORDER BY id DESC LIMIT 1").first
+        expect(row["provider"]).to eq("openrouter")
+      end
+
       it "persists session attribution and leaves historical task attribution empty" do
         repo = RelayDaemon::RepoStore.new(db).create(path: make_git_dir)
         session = RelayDaemon::SessionStore.new(db).create(repo: repo, worktrees_dir: Dir.mktmpdir)
@@ -196,6 +202,35 @@ RSpec.describe RelayDaemon::App do
         row = db.connection.execute("SELECT task_id, session_id FROM llm_calls ORDER BY id DESC LIMIT 1").first
         expect(row["task_id"]).to be_nil
         expect(row["session_id"]).to eq(session["id"])
+      end
+    end
+
+    context "with a custom provider" do
+      it "persists the custom provider name and exposes it via eval_dataset" do
+        repo = RelayDaemon::RepoStore.new(db).create(path: make_git_dir)
+        session = RelayDaemon::SessionStore.new(db).create(repo: repo, worktrees_dir: Dir.mktmpdir)
+
+        post_call(valid_body.merge(sessionId: session["id"], provider: "myvllm", routedModel: "myvllm::qwen3-32b"))
+        expect(last_response.status).to eq(201)
+
+        row = db.connection.execute("SELECT provider, routed_model FROM llm_calls ORDER BY id DESC LIMIT 1").first
+        expect(row["provider"]).to eq("myvllm")
+        expect(row["routed_model"]).to eq("myvllm::qwen3-32b")
+
+        view_row = db.connection.execute(
+          "SELECT provider FROM eval_dataset WHERE session_id = ?", [session["id"]]
+        ).first
+        expect(view_row["provider"]).to eq("myvllm")
+      end
+    end
+
+    context "without a provider (backward compatibility with older routers)" do
+      it "persists a null provider" do
+        post_call(valid_body.except(:provider))
+        expect(last_response.status).to eq(201)
+
+        row = db.connection.execute("SELECT provider FROM llm_calls ORDER BY id DESC LIMIT 1").first
+        expect(row["provider"]).to be_nil
       end
     end
 
