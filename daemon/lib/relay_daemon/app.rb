@@ -14,6 +14,7 @@ require_relative "llm_call_store"
 require_relative "bind_safety"
 require_relative "model_catalog"
 require_relative "pairing_service"
+require_relative "provider_store"
 require_relative "repo_store"
 require_relative "eval_store"
 require_relative "routing_config_writer"
@@ -36,6 +37,7 @@ module RelayDaemon
     set :relay_config, RelayDaemon::Config.from_env
     set :llm_call_store, nil  # nil = disabled; tests and bin/daemon inject a real one
     set :repo_store, nil      # RelayDaemon::RepoStore; tests inject
+    set :provider_store, nil  # RelayDaemon::ProviderStore; tests and bin/daemon inject
     set :session_store, nil   # RelayDaemon::SessionStore; tests inject
     set :stats_db, nil        # RelayDaemon::Db instance; tests and bin/daemon inject
     set :event_bus, RelayDaemon::EventBus.new
@@ -45,6 +47,39 @@ module RelayDaemon
     # Websockets are handled in middleware (before Sinatra) because the
     # hijacked response must reach the server without post-processing.
     use RelayDaemon::WsRack, self
+
+    # ----- Helpers -----
+
+    helpers do
+      # Redacted, client-facing shape for a provider hash (see
+      # RelayDaemon::ProviderStore#all / #create): api_key is never
+      # serialized to clients, only whether one is set.
+      def provider_public(provider)
+        {
+          "name" => provider.fetch("name"),
+          "baseUrl" => provider.fetch("baseUrl"),
+          "hasApiKey" => !provider["apiKey"].nil?,
+          "models" => provider.fetch("models")
+        }
+      end
+
+      # Regenerates the routing config file (tiers reordered by learned pass
+      # rates, plus the providers section) so the router's hot-reload picks
+      # up provider or test-outcome changes immediately. No-op unless both a
+      # routing config path and a database are configured.
+      def write_routing_config!
+        path = settings.relay_config.routing_config_path
+        return if path.nil?
+
+        db = settings.stats_db
+        return if db.nil?
+
+        RelayDaemon::RoutingConfigWriter.new(
+          RelayDaemon::EvalStore.new(db),
+          provider_store: settings.provider_store
+        ).write!(path)
+      end
+    end
 
     # ----- Auth -----
 
@@ -211,7 +246,66 @@ module RelayDaemon
     # default) so clients like the iOS model picker don't hardcode model ids.
     get "/models" do
       content_type :json
-      JSON.generate(RelayDaemon::ModelCatalog.new(settings.relay_config.routing_config_path).catalog)
+      catalog = RelayDaemon::ModelCatalog.new(
+        settings.relay_config.routing_config_path,
+        provider_store: settings.provider_store
+      ).catalog
+      JSON.generate(catalog)
+    end
+
+    # ----- Providers -----
+
+    get "/providers" do
+      content_type :json
+      store = settings.provider_store
+      halt 503, JSON.generate({ error: "provider store not configured" }) if store.nil?
+
+      JSON.generate(store.all.map { |p| provider_public(p) })
+    end
+
+    post "/providers" do
+      content_type :json
+
+      body_str = request.body.read
+      data = begin
+        JSON.parse(body_str)
+      rescue JSON::ParserError
+        halt 400, JSON.generate({ error: "invalid JSON" })
+      end
+
+      unless data.is_a?(Hash) && data["name"].is_a?(String) && data["baseUrl"].is_a?(String)
+        halt 422, JSON.generate({ error: "name and baseUrl are required" })
+      end
+
+      store = settings.provider_store
+      halt 503, JSON.generate({ error: "provider store not configured" }) if store.nil?
+
+      models = data["models"].is_a?(Array) ? data["models"].map(&:to_s) : []
+      api_key = data["apiKey"].is_a?(String) ? data["apiKey"] : nil
+
+      begin
+        provider = store.create(name: data["name"], base_url: data["baseUrl"], api_key: api_key, models: models)
+      rescue ArgumentError => e
+        halt 422, JSON.generate({ error: e.message })
+      rescue SQLite3::ConstraintException
+        halt 409, JSON.generate({ error: "provider already registered" })
+      end
+
+      write_routing_config!
+      status 201
+      JSON.generate(provider_public(provider))
+    end
+
+    delete "/providers/:name" do
+      content_type :json
+      store = settings.provider_store
+      halt 503, JSON.generate({ error: "provider store not configured" }) if store.nil?
+
+      halt 404, JSON.generate({ error: "not found" }) unless store.delete(params[:name])
+
+      write_routing_config!
+      status 204
+      ""
     end
 
     # ----- Internal call-log ingestion -----
@@ -456,9 +550,7 @@ module RelayDaemon
           )
         end
       end
-      if learn_from_outcome && settings.relay_config.routing_config_path
-        RelayDaemon::RoutingConfigWriter.new(RelayDaemon::EvalStore.new(db)).write!(settings.relay_config.routing_config_path)
-      end
+      write_routing_config! if learn_from_outcome
       JSON.generate(result)
     end
 

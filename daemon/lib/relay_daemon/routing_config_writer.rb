@@ -5,6 +5,7 @@ require "json"
 require "fileutils"
 require "sorbet-runtime"
 require_relative "eval_store"
+require_relative "provider_store"
 
 module RelayDaemon
   # Turns accumulated test outcomes into a routing config the TypeScript router
@@ -33,45 +34,73 @@ module RelayDaemon
           { "when" => "default", "tier" => 1 }
         ],
         "qualityDial" => { "default" => 5 },
-        "frontierModel" => "anthropic/claude-opus-latest"
+        "frontierModel" => "anthropic/claude-opus-latest",
+        "providers" => {}
       }.freeze,
       T::Hash[String, T.untyped]
     )
+
+    # Config files can carry inline provider API keys, so they must not be
+    # world/group readable.
+    FILE_MODE = 0o600
 
     sig do
       params(
         eval_store: EvalStore,
         base_config: T::Hash[String, T.untyped],
-        min_samples: Integer
+        min_samples: Integer,
+        provider_store: T.nilable(ProviderStore)
       ).void
     end
-    def initialize(eval_store, base_config: DEFAULT_BASE_CONFIG, min_samples: MIN_SAMPLES)
-      @eval_store  = eval_store
-      @base_config = base_config
-      @min_samples = min_samples
+    def initialize(eval_store, base_config: DEFAULT_BASE_CONFIG, min_samples: MIN_SAMPLES, provider_store: nil)
+      @eval_store     = eval_store
+      @base_config    = base_config
+      @min_samples    = min_samples
+      @provider_store = provider_store
     end
 
     # Routing-config hash (router schema) with each tier's models reordered by
-    # measured pass rate.
+    # measured pass rate, and a "providers" section merged in from every
+    # daemon-managed custom provider (see ProviderStore, M45).
     sig { returns(T::Hash[String, T.untyped]) }
     def config
       rates = pass_rates
       tiers = T.cast(@base_config.fetch("tiers"), T::Hash[String, T::Array[String]])
       reordered = tiers.transform_values { |models| reorder(models, rates) }
-      @base_config.merge("tiers" => reordered)
+      @base_config.merge("tiers" => reordered, "providers" => providers_section)
     end
 
     # Writes the config atomically (parent dir created) so the router's
-    # mtime-based reload picks it up without a torn read.
+    # mtime-based reload picks it up without a torn read. Mode 0600 since the
+    # "providers" section can carry inline API keys.
     sig { params(path: String).void }
     def write!(path)
       FileUtils.mkdir_p(File.dirname(path))
       tmp = "#{path}.#{Process.pid}.tmp"
       File.write(tmp, JSON.pretty_generate(config))
+      File.chmod(FILE_MODE, tmp)
       File.rename(tmp, path)
     end
 
     private
+
+    # Router-schema providers map (name => { baseUrl, apiKey }) built from
+    # every stored provider. The apiKey is inlined (rather than apiKeyEnv)
+    # because these providers are persisted directly by the daemon, not
+    # sourced from the router operator's environment. Falls back to whatever
+    # the base config already had when no provider store is configured.
+    sig { returns(T::Hash[String, T.untyped]) }
+    def providers_section
+      store = @provider_store
+      return T.cast(@base_config.fetch("providers", {}), T::Hash[String, T.untyped]) if store.nil?
+
+      store.all.each_with_object({}) do |provider, out|
+        entry = { "baseUrl" => provider.fetch("baseUrl") }
+        api_key = provider["apiKey"]
+        entry["apiKey"] = api_key unless api_key.nil?
+        out[provider.fetch("name")] = entry
+      end
+    end
 
     # model => pass rate, only for models with a known rate and enough samples.
     sig { returns(T::Hash[String, Float]) }

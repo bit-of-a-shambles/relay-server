@@ -3,6 +3,7 @@
 
 require "json"
 require "sorbet-runtime"
+require_relative "provider_store"
 
 module RelayDaemon
   # Backs `GET /models`: reads the routing-config JSON that RoutingConfigWriter
@@ -31,14 +32,18 @@ module RelayDaemon
       T::Hash[String, T.untyped]
     )
 
-    sig { params(routing_config_path: T.nilable(String)).void }
-    def initialize(routing_config_path)
+    sig { params(routing_config_path: T.nilable(String), provider_store: T.nilable(ProviderStore)).void }
+    def initialize(routing_config_path, provider_store: nil)
       @routing_config_path = routing_config_path
+      @provider_store = provider_store
     end
 
     # { "tiers" => [{ "tier" => 0, "models" => [...] }, ...],
-    #   "frontierModel" => "...", "source" => "file" | "default" }
-    # Tiers are sorted ascending by tier number.
+    #   "frontierModel" => "...", "source" => "file" | "default",
+    #   "custom" => ["providerName::modelId", ...] }
+    # Tiers are sorted ascending by tier number. "custom" lists every
+    # daemon-managed provider's declared models (see ProviderStore, M45),
+    # independent of the routing config file's source.
     sig { returns(T::Hash[String, T.untyped]) }
     def catalog
       config, source = load_config
@@ -49,11 +54,22 @@ module RelayDaemon
       {
         "tiers" => sorted_tiers,
         "frontierModel" => config.fetch("frontierModel"),
-        "source" => source
+        "source" => source,
+        "custom" => custom_models
       }
     end
 
     private
+
+    sig { returns(T::Array[String]) }
+    def custom_models
+      store = @provider_store
+      return [] if store.nil?
+
+      store.all.flat_map do |provider|
+        T.cast(provider.fetch("models"), T::Array[String]).map { |model| "#{provider.fetch("name")}::#{model}" }
+      end
+    end
 
     # Reads and parses the routing config file, falling back to the built-in
     # default (with source "default") when there is no path configured, the
