@@ -128,4 +128,70 @@ RSpec.describe RelayDaemon::Db do
       db2.connection.close
     end
   end
+
+  describe "thread safety" do
+    it "gives every thread its own connection object" do
+      main_conn = db.connection
+
+      queue = Queue.new
+      threads = Array.new(6) { Thread.new { queue << db.connection.object_id } }
+      threads.each(&:join)
+
+      ids = Array.new(6) { queue.pop }
+      expect(ids.uniq.size).to eq(6)
+      expect(ids).not_to include(main_conn.object_id)
+    end
+
+    it "returns the same connection object on repeated calls from the same thread" do
+      first = db.connection
+      second = db.connection
+      expect(first.object_id).to eq(second.object_id)
+    end
+
+    it "lets many threads insert and read concurrently without BusyException or lost writes" do
+      thread_count = 25
+      errors = Queue.new
+
+      threads = Array.new(thread_count) do |i|
+        Thread.new do
+          conn = db.connection
+          path = "/tmp/relay-thread-safety-#{i}"
+          conn.execute(
+            "INSERT INTO repos (path, name, test_command, created_at) VALUES (?, ?, ?, ?)",
+            [path, "repo-#{i}", nil, Time.now.utc.iso8601]
+          )
+          row = conn.get_first_row("SELECT id, path FROM repos WHERE path = ?", [path])
+          errors << "missing row for #{path}" if row.nil?
+        rescue StandardError => e
+          errors << e
+        end
+      end
+      threads.each(&:join)
+
+      problems = []
+      problems << errors.pop until errors.empty?
+      expect(problems).to eq([])
+
+      count = db.connection.get_first_value("SELECT COUNT(*) FROM repos")
+      expect(count).to eq(thread_count)
+    end
+
+    it "runs migrate! exactly once even when many threads race for the first connection" do
+      # Force the "not yet migrated" state back on so every thread below
+      # contends for the migration mutex as if this were the first access.
+      db.instance_variable_set(:@migrated, false)
+
+      call_count = 0
+      count_mutex = Mutex.new
+      allow(db).to receive(:migrate!).and_wrap_original do |original, *args|
+        count_mutex.synchronize { call_count += 1 }
+        original.call(*args)
+      end
+
+      threads = Array.new(10) { Thread.new { db.connection } }
+      threads.each(&:join)
+
+      expect(call_count).to eq(1)
+    end
+  end
 end
