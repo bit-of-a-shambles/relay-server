@@ -12,6 +12,7 @@ require_relative "file_browser"
 require_relative "git"
 require_relative "llm_call_store"
 require_relative "bind_safety"
+require_relative "model_catalog"
 require_relative "pairing_service"
 require_relative "repo_store"
 require_relative "eval_store"
@@ -202,6 +203,15 @@ module RelayDaemon
       db = settings.stats_db
       halt 503, JSON.generate({ error: "database not configured" }) if db.nil?
       JSON.generate({ modelOutcomes: RelayDaemon::EvalStore.new(db).model_outcomes })
+    end
+
+    # ----- Models -----
+
+    # Live routing tiers (from RoutingConfigWriter's output, or the built-in
+    # default) so clients like the iOS model picker don't hardcode model ids.
+    get "/models" do
+      content_type :json
+      JSON.generate(RelayDaemon::ModelCatalog.new(settings.relay_config.routing_config_path).catalog)
     end
 
     # ----- Internal call-log ingestion -----
