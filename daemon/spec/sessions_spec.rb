@@ -50,6 +50,10 @@ RSpec.describe "Sessions API" do
     RelayDaemon::App.set(:repo_store, repo_store)
     RelayDaemon::App.set(:session_store, session_store)
     RelayDaemon::App.set(:stats_db, db)
+    # A provider store from another spec file may still be set on the
+    # shared Sinatra settings and its connection since closed; this file's
+    # routing-config writes don't need providers, so keep it unset.
+    RelayDaemon::App.set(:provider_store, nil)
   end
 
   after { db.connection.close }

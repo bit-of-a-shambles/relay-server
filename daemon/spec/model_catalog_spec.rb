@@ -4,6 +4,7 @@ require "spec_helper"
 require "relay_daemon/model_catalog"
 require "relay_daemon/routing_config_writer"
 require "relay_daemon/eval_store"
+require "relay_daemon/provider_store"
 require "relay_daemon/db"
 require "json"
 require "tmpdir"
@@ -17,6 +18,19 @@ RSpec.describe RelayDaemon::ModelCatalog do
       expect(result["frontierModel"]).to eq("anthropic/claude-opus-latest")
       expect(result["tiers"].map { |t| t["tier"] }).to eq([0, 1, 2, 3])
       expect(result["tiers"].first).to eq({ "tier" => 0, "models" => ["qwen/qwen3-coder-small"] })
+      expect(result["custom"]).to eq([])
+    end
+
+    it "lists every stored provider's models as providerName::modelId under 'custom'" do
+      provider_db = RelayDaemon::Db.new(File.join(Dir.mktmpdir, "providers.sqlite3"))
+      provider_store = RelayDaemon::ProviderStore.new(provider_db)
+      provider_store.create(name: "myvllm", base_url: "http://localhost:8000", models: ["llama-3", "qwen"])
+      provider_store.create(name: "nomodels", base_url: "http://localhost:9000")
+
+      result = described_class.new(nil, provider_store: provider_store).catalog
+
+      expect(result["custom"]).to eq(["myvllm::llama-3", "myvllm::qwen"])
+      provider_db.connection.close
     end
 
     it "returns the built-in default when the file does not exist" do
@@ -112,6 +126,7 @@ RSpec.describe "GET /models via app" do
     RelayDaemon::App.set(:relay_config, RelayDaemon::Config.new(
       daemon_token: token, host: "127.0.0.1", port: 7777, db_path: "/tmp/relay_models_test.db"
     ))
+    RelayDaemon::App.set(:provider_store, nil)
   end
 
   it "returns 401 without auth" do
@@ -127,6 +142,22 @@ RSpec.describe "GET /models via app" do
     expect(body["source"]).to eq("default")
     expect(body["tiers"].map { |t| t["tier"] }).to eq([0, 1, 2, 3])
     expect(body["frontierModel"]).to eq("anthropic/claude-opus-latest")
+    expect(body["custom"]).to eq([])
+  end
+
+  it "lists a provider created via POST /providers under 'custom'" do
+    require "relay_daemon/provider_store"
+    provider_db = RelayDaemon::Db.new(File.join(Dir.mktmpdir, "providers.sqlite3"))
+    RelayDaemon::App.set(:provider_store, RelayDaemon::ProviderStore.new(provider_db))
+
+    post "/providers",
+         { name: "myvllm", baseUrl: "http://localhost:8000", models: ["llama-3"] }.to_json,
+         { "CONTENT_TYPE" => "application/json", "HTTP_AUTHORIZATION" => "Bearer #{token}" }
+    expect(last_response.status).to eq(201)
+
+    get "/models", {}, { "HTTP_AUTHORIZATION" => "Bearer #{token}" }
+    body = JSON.parse(last_response.body)
+    expect(body["custom"]).to eq(["myvllm::llama-3"])
   end
 
   it "reflects a config written by RoutingConfigWriter after write-then-GET" do

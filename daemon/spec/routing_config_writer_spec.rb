@@ -3,6 +3,7 @@
 require "spec_helper"
 require "relay_daemon/db"
 require "relay_daemon/eval_store"
+require "relay_daemon/provider_store"
 require "relay_daemon/routing_config_writer"
 require "json"
 require "securerandom"
@@ -98,6 +99,26 @@ RSpec.describe RelayDaemon::RoutingConfigWriter do
       expect(cfg["qualityDial"]).to eq("default" => 5)
       expect(cfg["frontierModel"]).to eq("anthropic/claude-opus-latest")
     end
+
+    it "defaults providers to an empty hash when no provider store is configured" do
+      cfg = described_class.new(eval_store).config
+      expect(cfg["providers"]).to eq({})
+    end
+
+    it "merges every stored provider, inlining its api key when present" do
+      provider_db = RelayDaemon::Db.new(File.join(Dir.mktmpdir, "providers.sqlite3"))
+      provider_store = RelayDaemon::ProviderStore.new(provider_db)
+      provider_store.create(name: "myvllm", base_url: "http://localhost:8000", api_key: "secret")
+      provider_store.create(name: "nokey", base_url: "http://localhost:9000")
+
+      cfg = described_class.new(eval_store, provider_store: provider_store).config
+
+      expect(cfg["providers"]).to eq(
+        "myvllm" => { "baseUrl" => "http://localhost:8000", "apiKey" => "secret" },
+        "nokey" => { "baseUrl" => "http://localhost:9000" }
+      )
+      provider_db.connection.close
+    end
   end
 
   describe "#write!" do
@@ -109,6 +130,14 @@ RSpec.describe RelayDaemon::RoutingConfigWriter do
       parsed = JSON.parse(File.read(path))
       expect(parsed["tiers"]["1"].first).to eq("deepseek/deepseek-chat")
       expect(parsed["rules"].last).to eq("when" => "default", "tier" => 1)
+    end
+
+    it "writes the file with mode 0600 (providers may carry inline api keys)" do
+      path = File.join(Dir.mktmpdir, "routing.json")
+      described_class.new(eval_store, min_samples: 1).write!(path)
+
+      mode = File.stat(path).mode & 0o777
+      expect(mode).to eq(0o600)
     end
   end
 end
