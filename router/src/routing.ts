@@ -6,6 +6,12 @@ export type RoutingRule =
   | { when: `requestedModel contains '${string}'`; tier: number }
   | { when: `promptTokens > ${number}`; tier: number };
 
+export type ProviderConfig = {
+  baseUrl: string;
+  apiKey?: string;
+  apiKeyEnv?: string;
+};
+
 export type RoutingConfig = {
   tiers: Record<string, string[]>;
   rules: RoutingRule[];
@@ -13,7 +19,26 @@ export type RoutingConfig = {
     default: number;
   };
   frontierModel: string;
+  providers: Record<string, ProviderConfig>;
 };
+
+// Field names deliberately mirror RouterServerOptions (server.ts) so callers
+// can pass that object straight through without adapting it. Kept as a local
+// structural type (rather than importing RouterServerOptions) to avoid a
+// circular import between routing.ts and server.ts.
+export type UpstreamOptions = {
+  openRouterBaseUrl: string;
+  openRouterApiKey: string | undefined;
+};
+
+export type ResolvedUpstream = {
+  baseUrl: string;
+  apiKey: string | undefined;
+  model: string;
+};
+
+const RESERVED_PROVIDER_NAME = "openrouter";
+const PROVIDER_NAME_PATTERN = /^[a-z0-9_-]+$/;
 
 export type RoutingDecision = {
   requestedModel: string;
@@ -48,7 +73,8 @@ export const DEFAULT_ROUTING_CONFIG: RoutingConfig = {
   qualityDial: {
     default: 5
   },
-  frontierModel: "anthropic/claude-opus-latest"
+  frontierModel: "anthropic/claude-opus-latest",
+  providers: {}
 };
 
 export function createRoutingConfigLoader(path: string | undefined): RoutingConfigLoader {
@@ -100,6 +126,18 @@ export function chooseRoute(
     };
   }
 
+  if (request.model.includes("::")) {
+    return {
+      requestedModel: request.model,
+      routedModel: request.model,
+      tier: findDefaultRuleTier(config.rules),
+      promptTokens,
+      qualityDial,
+      frontierModel: config.frontierModel,
+      escalationReason
+    };
+  }
+
   const baseTier = findBaseTier(request.model, promptTokens, config.rules);
   const tier = clampTier(
     baseTier + Math.round((qualityDial - 5) / 3) + (escalationReason === null ? 0 : 1),
@@ -116,6 +154,33 @@ export function chooseRoute(
     frontierModel: config.frontierModel,
     escalationReason
   };
+}
+
+export function resolveUpstream(
+  modelId: string,
+  config: RoutingConfig,
+  options: UpstreamOptions
+): ResolvedUpstream {
+  const separatorIndex = modelId.indexOf("::");
+  if (separatorIndex === -1) {
+    return {
+      baseUrl: options.openRouterBaseUrl,
+      apiKey: options.openRouterApiKey,
+      model: modelId
+    };
+  }
+
+  const providerName = modelId.slice(0, separatorIndex);
+  const bareModel = modelId.slice(separatorIndex + 2);
+  const provider = config.providers[providerName];
+  if (provider === undefined) {
+    throw new Error(`Unknown provider '${providerName}' in model id '${modelId}'`);
+  }
+
+  const apiKey =
+    provider.apiKey ?? (provider.apiKeyEnv === undefined ? undefined : process.env[provider.apiKeyEnv]);
+
+  return { baseUrl: provider.baseUrl, apiKey, model: bareModel };
 }
 
 export function estimateFrontierCostUsd(
@@ -140,13 +205,55 @@ function parseRoutingConfig(value: unknown): RoutingConfig {
     typeof record.frontierModel === "string" && record.frontierModel.length > 0
       ? record.frontierModel
       : firstModelForTier({ tiers }, maxTier(tiers));
+  const providers = parseProviders(record.providers);
 
   return {
     tiers,
     rules,
     qualityDial: { default: defaultDial },
-    frontierModel
+    frontierModel,
+    providers
   };
+}
+
+function parseProviders(value: unknown): Record<string, ProviderConfig> {
+  if (value === undefined) {
+    return {};
+  }
+
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("Invalid routing config providers");
+  }
+
+  const providers: Record<string, ProviderConfig> = {};
+  for (const [name, rawProvider] of Object.entries(value)) {
+    if (!PROVIDER_NAME_PATTERN.test(name)) {
+      throw new Error(`Invalid routing config provider name '${name}'`);
+    }
+    if (name === RESERVED_PROVIDER_NAME) {
+      throw new Error(`Provider name '${RESERVED_PROVIDER_NAME}' is reserved`);
+    }
+    if (typeof rawProvider !== "object" || rawProvider === null || Array.isArray(rawProvider)) {
+      throw new Error(`Invalid routing config provider '${name}'`);
+    }
+
+    const provider = rawProvider as Record<string, unknown>;
+    if (typeof provider.baseUrl !== "string" || !/^https?:\/\//.test(provider.baseUrl)) {
+      throw new Error(`Invalid routing config provider baseUrl for '${name}'`);
+    }
+
+    const parsed: ProviderConfig = { baseUrl: provider.baseUrl };
+    if (typeof provider.apiKey === "string") {
+      parsed.apiKey = provider.apiKey;
+    }
+    if (typeof provider.apiKeyEnv === "string") {
+      parsed.apiKeyEnv = provider.apiKeyEnv;
+    }
+
+    providers[name] = parsed;
+  }
+
+  return providers;
 }
 
 function parseTiers(value: unknown): Record<string, string[]> {
@@ -234,6 +341,14 @@ function findBaseTier(model: string, promptTokens: number, rules: RoutingRule[])
   }
 
   throw new Error("Routing config requires a default rule");
+}
+
+function findDefaultRuleTier(rules: RoutingRule[]): number {
+  const defaultRule = rules.find((rule) => rule.when === "default");
+  if (defaultRule === undefined) {
+    throw new Error("Routing config requires a default rule");
+  }
+  return defaultRule.tier;
 }
 
 function findExactModelTier(model: string, config: Pick<RoutingConfig, "tiers">): number | null {
