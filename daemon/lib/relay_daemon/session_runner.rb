@@ -37,10 +37,11 @@ module RelayDaemon
           router_base_url: T.nilable(String),
           run_id: T.nilable(String),
           append_user: T::Boolean,
-          resume: T.nilable(T::Boolean)
+          resume: T.nilable(T::Boolean),
+          escalated: T::Boolean
         ).returns(Thread)
       end
-      def run_async(session_id:, content:, worktree_path:, sessions_log_dir:, agent_command:, db_path:, event_bus:, agent_env: {}, router_base_url: nil, run_id: nil, append_user: true, resume: nil)
+      def run_async(session_id:, content:, worktree_path:, sessions_log_dir:, agent_command:, db_path:, event_bus:, agent_env: {}, router_base_url: nil, run_id: nil, append_user: true, resume: nil, escalated: false)
         Thread.new do
           lock_for(session_id).synchronize do
             run_once(
@@ -55,7 +56,8 @@ module RelayDaemon
               router_base_url: router_base_url,
               run_id: run_id,
               append_user: append_user,
-              resume: resume
+              resume: resume,
+              escalated: escalated
             )
           end
         end
@@ -92,10 +94,11 @@ module RelayDaemon
           router_base_url: T.nilable(String),
           run_id: T.nilable(String),
           append_user: T::Boolean,
-          resume: T.nilable(T::Boolean)
+          resume: T.nilable(T::Boolean),
+          escalated: T::Boolean
         ).void
       end
-      def run_once(session_id:, content:, worktree_path:, sessions_log_dir:, agent_command:, db_path:, event_bus:, agent_env:, router_base_url:, run_id:, append_user:, resume:)
+      def run_once(session_id:, content:, worktree_path:, sessions_log_dir:, agent_command:, db_path:, event_bus:, agent_env:, router_base_url:, run_id:, append_user:, resume:, escalated: false)
         run_id ||= SecureRandom.uuid
         db = Db.new(db_path)
         session_store = SessionStore.new(db)
@@ -112,7 +115,9 @@ module RelayDaemon
         argv = agent_command.is_a?(Array) ? agent_command : build_argv(agent_command, content, session_id: session_id, resume: resume)
         run_env = agent_env.merge("RELAY_SESSION_ID" => session_id)
         if router_base_url
-          run_env["ANTHROPIC_BASE_URL"] = "#{router_base_url.delete_suffix("/")}/session/#{session_id}"
+          base = "#{router_base_url.delete_suffix("/")}/session/#{session_id}"
+          base += "/escalated" if escalated
+          run_env["ANTHROPIC_BASE_URL"] = base
         end
 
         lines = []

@@ -279,6 +279,78 @@ RSpec.describe "Sessions API" do
       expect(JSON.parse(last_response.body)["testsPassed"]).to be false
     end
 
+    it "auto-retries exactly once with an escalated agent run when tests fail and autoRetry is true" do
+      failing_repo = repo_store.create(path: make_git_dir, test_command: "echo boom-output && false")
+      session = session_store.create(repo: failing_repo, worktrees_dir: worktrees_dir)
+      events = []
+      RelayDaemon::App.settings.event_bus.subscribe { |event| events << event }
+
+      post "/sessions/#{session["id"]}/test", { autoRetry: true }.to_json,
+           { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+      expect(last_response.status).to eq(200)
+      expect(JSON.parse(last_response.body)["testsPassed"]).to be false
+
+      messages = wait_for_messages(session["id"], 2)
+      expect(messages.map { |message| message["role"] }).to eq(%w[user assistant])
+      expect(messages.first["content"]).to include(
+        "Tests failed:", "boom-output", "Fix and keep changes minimal."
+      )
+      expect(messages.last["content"]).to include("mode=resume")
+
+      expect(File.read(File.join(worktrees_dir, session["id"], "env_anthropic_base.txt")))
+        .to end_with("/session/#{session["id"]}/escalated")
+      expect(events.map { |event| event["type"] }).to include("message.created", "agent.event")
+
+      # Exactly one retry run: two messages total, no further growth after settling.
+      sleep 0.1
+      expect(message_store.list_for_session(session["id"]).length).to eq(2)
+    end
+
+    it "does not auto-retry when tests pass even if autoRetry is true" do
+      session = create_session
+      File.write(File.join(worktrees_dir, session["id"], "session_agent_runs.txt"), "ok\n")
+
+      post "/sessions/#{session["id"]}/test", { autoRetry: true }.to_json,
+           { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+      expect(last_response.status).to eq(200)
+      expect(JSON.parse(last_response.body)["testsPassed"]).to be true
+
+      expect(message_store.list_for_session(session["id"])).to eq([])
+    end
+
+    it "does not auto-retry on failure by default (autoRetry omitted)" do
+      failing_repo = repo_store.create(path: make_git_dir, test_command: "false")
+      session = session_store.create(repo: failing_repo, worktrees_dir: worktrees_dir)
+
+      post "/sessions/#{session["id"]}/test", "", auth_headers
+      expect(last_response.status).to eq(200)
+      expect(JSON.parse(last_response.body)["testsPassed"]).to be false
+
+      expect(message_store.list_for_session(session["id"])).to eq([])
+    end
+
+    it "returns 422 when autoRetry is not a boolean" do
+      session = create_session
+
+      post "/sessions/#{session["id"]}/test", { autoRetry: "yes" }.to_json,
+           { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+      expect(last_response.status).to eq(422)
+    end
+
+    it "returns 503 when auto-retrying a failed test but no agent command is configured" do
+      failing_repo = repo_store.create(path: make_git_dir, test_command: "false")
+      session = session_store.create(repo: failing_repo, worktrees_dir: worktrees_dir)
+      RelayDaemon::App.set(:relay_config, RelayDaemon::Config.new(
+        daemon_token: token, host: "127.0.0.1", port: 7777, db_path: db_path,
+        worktrees_dir: worktrees_dir, agent_log_dir: agent_log_dir,
+        agent_command: nil, routing_config_path: routing_config_path
+      ))
+
+      post "/sessions/#{session["id"]}/test", { autoRetry: true }.to_json,
+           { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+      expect(last_response.status).to eq(503)
+    end
+
     it "does not refresh learned routing when learnFromOutcome is false" do
       session = create_session
       File.write(routing_config_path, "unchanged")
