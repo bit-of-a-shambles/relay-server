@@ -112,7 +112,11 @@ async function handleRequest(
 
   const body = await readBody(request, DEFAULT_MAX_BODY_BYTES);
   const anthropicRequest = parseAnthropicRequest(body);
-  const route = chooseRoute(anthropicRequest, options.routingConfigLoader.load());
+  const route = chooseRoute(
+    anthropicRequest,
+    options.routingConfigLoader.load(),
+    attribution.escalated ? "test_failure_retry" : null
+  );
 
   if (anthropicRequest.stream === true) {
     const upstreamResponse = await callOpenRouter(
@@ -207,6 +211,7 @@ type NonStreamingResult =
 
 type CallAttribution = {
   sessionId: string | null;
+  escalated: boolean;
 };
 
 async function executeNonStreamingWithRetry(
@@ -344,12 +349,17 @@ function extractOpenRouterCostUsd(value: unknown): number | null {
 
 function matchMessagesPath(pathname: string): CallAttribution | null {
   if (pathname === "/api/v1/messages") {
-    return { sessionId: null };
+    return { sessionId: null, escalated: false };
+  }
+
+  const escalatedMatch = /^\/api\/session\/([^/]+)\/escalated\/v1\/messages$/.exec(pathname);
+  if (escalatedMatch !== null) {
+    return { sessionId: decodeURIComponent(escalatedMatch[1] as string), escalated: true };
   }
 
   const match = /^\/api\/session\/([^/]+)\/v1\/messages$/.exec(pathname);
   if (match !== null) {
-    return { sessionId: decodeURIComponent(match[1] as string) };
+    return { sessionId: decodeURIComponent(match[1] as string), escalated: false };
   }
 
   return null;

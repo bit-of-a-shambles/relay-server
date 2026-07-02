@@ -86,6 +86,23 @@ RSpec.describe RelayDaemon::SessionRunner do
       .to eq("http://127.0.0.1:7778/api/session/#{session["id"]}")
   end
 
+  it "suffixes the routing base url with /escalated when escalated is true" do
+    described_class.run_async(
+      session_id: session["id"],
+      content: "retry please",
+      worktree_path: worktree_path,
+      sessions_log_dir: sessions_log_dir,
+      agent_command: agent_command,
+      db_path: db_path,
+      event_bus: event_bus,
+      router_base_url: "http://127.0.0.1:7778/api/",
+      escalated: true
+    ).join
+
+    expect(File.read(File.join(worktree_path, "env_anthropic_base.txt")))
+      .to eq("http://127.0.0.1:7778/api/session/#{session["id"]}/escalated")
+  end
+
   it "stores a fallback assistant message when the agent produces no output" do
     described_class.run_async(
       session_id: session["id"],

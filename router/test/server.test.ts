@@ -134,6 +134,56 @@ describe("Relay router HTTP server", () => {
     expect(sink.records[0]?.sessionId).toBe("session-xyz-789");
   });
 
+  it("routes escalated session messages one tier up with test_failure_retry", async () => {
+    const sink = new MemoryCallLogSink();
+    const upstream = await createTestServer((request, response) => {
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(
+        JSON.stringify({
+          id: "chatcmpl_escalated",
+          model: "anthropic/claude-sonnet-latest",
+          choices: [
+            { index: 0, finish_reason: "stop", message: { role: "assistant", content: "ok" } }
+          ],
+          usage: { prompt_tokens: 5, completion_tokens: 1, total_tokens: 6 }
+        })
+      );
+    });
+    openServers.push(upstream);
+
+    const router = await listenRouterWithOptions({
+      openRouterBaseUrl: upstream.baseUrl,
+      callLogSink: sink
+    });
+    openServers.push(router);
+
+    const escalatedResponse = await fetch(
+      `${router.baseUrl}/api/session/session-escalated-1/escalated/v1/messages`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-5",
+          max_tokens: 50,
+          messages: [{ role: "user", content: "retry after test failure" }]
+        })
+      }
+    );
+
+    expect(escalatedResponse.status).toBe(200);
+    expect(upstream.requests.map((request) => JSON.parse(request.body).model)).toEqual([
+      "anthropic/claude-sonnet-latest"
+    ]);
+    expect(sink.records).toHaveLength(1);
+    expect(sink.records[0]).toMatchObject({
+      sessionId: "session-escalated-1",
+      requestedModel: "claude-sonnet-4-5",
+      routedModel: "anthropic/claude-sonnet-latest",
+      tier: 2,
+      escalationReason: "test_failure_retry"
+    });
+  });
+
   it("routes by config, retries non-streaming upstream errors, and records call logs", async () => {
     const sink = new MemoryCallLogSink();
     let attempt = 0;

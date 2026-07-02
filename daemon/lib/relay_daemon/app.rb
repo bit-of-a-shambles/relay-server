@@ -396,6 +396,10 @@ module RelayDaemon
       unless learn_from_outcome == true || learn_from_outcome == false
         halt 422, JSON.generate({ error: "learnFromOutcome must be boolean" })
       end
+      auto_retry = data.key?("autoRetry") ? data["autoRetry"] : false
+      unless auto_retry == true || auto_retry == false
+        halt 422, JSON.generate({ error: "autoRetry must be boolean" })
+      end
 
       test_command = repo["testCommand"]
       test_store = RelayDaemon::SessionTestStore.new(db, session_store)
@@ -411,6 +415,46 @@ module RelayDaemon
         tests_passed = test_status.success?
         test_store.record(session_id: session["id"], tests_passed: tests_passed)
         result = { "testsPassed" => tests_passed }
+
+        if tests_passed == false && auto_retry
+          agent_command = settings.relay_config.agent_command
+          halt 503, JSON.generate({ error: "agent command not configured" }) if agent_command.nil?
+
+          tail_output = File.readlines(log_path).last(50).join
+          retry_content = "Tests failed:\n#{tail_output}Fix and keep changes minimal."
+
+          message_store = RelayDaemon::MessageStore.new(db, session_store)
+          run_id = SecureRandom.uuid
+          message = message_store.append(
+            session_id: session["id"],
+            role: "user",
+            content: retry_content,
+            agent_run_id: run_id
+          )
+          settings.event_bus.publish(
+            type: "message.created",
+            payload: { "sessionId" => session["id"], "message" => message }
+          )
+
+          agent_argv = RelayDaemon::SessionRunner.build_argv(
+            agent_command, retry_content, session_id: session["id"], resume: true
+          )
+
+          RelayDaemon::SessionRunner.run_async(
+            session_id: session["id"],
+            content: retry_content,
+            worktree_path: File.join(settings.relay_config.worktrees_dir, session["id"]),
+            sessions_log_dir: File.join(settings.relay_config.agent_log_dir, "sessions"),
+            agent_command: agent_argv,
+            db_path: settings.relay_config.db_path,
+            event_bus: settings.event_bus,
+            router_base_url: settings.relay_config.router_base_url,
+            run_id: run_id,
+            append_user: false,
+            resume: true,
+            escalated: true
+          )
+        end
       end
       if learn_from_outcome && settings.relay_config.routing_config_path
         RelayDaemon::RoutingConfigWriter.new(RelayDaemon::EvalStore.new(db)).write!(settings.relay_config.routing_config_path)
