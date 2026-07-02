@@ -61,6 +61,15 @@ module RelayDaemon
         end
       end
 
+      # True while an agent run for +session_id+ is actively executing
+      # (i.e. the per-session lock used by run_async is held). Used to
+      # refuse discarding a session mid-run.
+      sig { params(session_id: String).returns(T::Boolean) }
+      def running?(session_id)
+        lock = @locks_mutex.synchronize { @locks[session_id] }
+        !lock.nil? && lock.locked?
+      end
+
       private
 
       sig { params(session_id: String).returns(Mutex) }

@@ -51,15 +51,23 @@ module RelayDaemon
       raise GitError, "git worktree add failed: #{err.strip}" unless status.success?
     end
 
-    # Removes a worktree (prunes stale refs too).
-    sig { params(dest: String).void }
-    def worktree_remove(dest)
-      _, err, status = Open3.capture3(
-        "git", "-C", @path, "worktree", "remove", "--force", dest
-      )
-      raise GitError, "git worktree remove failed: #{err.strip}" unless status.success?
+    # Removes a worktree (prunes stale refs too). Tolerant of the worktree
+    # already being gone (or never having been registered): returns false
+    # instead of raising in that case. Returns true when a worktree was
+    # actually removed.
+    sig { params(dest: String, force: T::Boolean).returns(T::Boolean) }
+    def worktree_remove(dest, force: true)
+      args = ["git", "-C", @path, "worktree", "remove", dest]
+      args << "--force" if force
+      _, err, status = Open3.capture3(*args)
+      if status.success?
+        Open3.capture3("git", "-C", @path, "worktree", "prune")
+        return true
+      end
 
-      Open3.capture3("git", "-C", @path, "worktree", "prune")
+      return false if err.include?("is not a working tree")
+
+      raise GitError, "git worktree remove failed: #{err.strip}"
     end
 
     # Deletes a branch (force delete, safe for relay/* scratch branches).
@@ -67,6 +75,19 @@ module RelayDaemon
     def delete_branch(branch)
       _, err, status = Open3.capture3("git", "-C", @path, "branch", "-D", branch)
       raise GitError, "git branch -D failed: #{err.strip}" unless status.success?
+    end
+
+    # Deletes a branch, tolerant of it already being gone: returns false
+    # instead of raising in that case. Returns true when a branch was
+    # actually deleted.
+    sig { params(name: String, force: T::Boolean).returns(T::Boolean) }
+    def branch_delete(name, force: true)
+      flag = force ? "-D" : "-d"
+      _, err, status = Open3.capture3("git", "-C", @path, "branch", flag, name)
+      return true if status.success?
+      return false if err.include?("not found")
+
+      raise GitError, "git branch delete failed: #{err.strip}"
     end
 
     # Stages all changes in the working tree and commits with message.

@@ -379,4 +379,87 @@ RSpec.describe "Sessions API" do
       expect(JSON.parse(last_response.body)["error"]).to include("git merge failed")
     end
   end
+
+  describe "POST /sessions/:id/discard" do
+    def post_discard(id)
+      post "/sessions/#{id}/discard", "", auth_headers
+    end
+
+    it "removes the worktree and branch, marks the session discarded, and frees the repo" do
+      session = create_session
+      events = []
+      RelayDaemon::App.settings.event_bus.subscribe { |event| events << event }
+
+      post_discard(session["id"])
+      expect(last_response.status).to eq(200)
+      body = JSON.parse(last_response.body)
+      expect(body["status"]).to eq("discarded")
+
+      expect(Dir.exist?(File.join(worktrees_dir, session["id"]))).to be false
+      branch_out, = Open3.capture3("git", "-C", git_dir, "branch", "--list", session["branch"])
+      expect(branch_out.strip).to eq("")
+
+      updated_events = events.select { |event| event["type"] == "session.updated" }
+      expect(updated_events.map { |event| event["payload"]["sessionId"] }).to include(session["id"])
+
+      # active_for_repo excludes the discarded session, so a new one can open.
+      post_session
+      expect(last_response.status).to eq(201)
+      expect(JSON.parse(last_response.body)["id"]).not_to eq(session["id"])
+    end
+
+    it "returns 404 for an unknown session" do
+      post_discard("missing")
+      expect(last_response.status).to eq(404)
+    end
+
+    it "returns 409 for an already-discarded session" do
+      session = create_session
+      post_discard(session["id"])
+      expect(last_response.status).to eq(200)
+
+      post_discard(session["id"])
+      expect(last_response.status).to eq(409)
+      expect(JSON.parse(last_response.body)["error"]).to eq("already discarded")
+    end
+
+    it "returns 409 while an agent run is in flight, then succeeds once the run finishes" do
+      session = create_session
+      post "/sessions/#{session["id"]}/messages",
+           { content: "slow discard test" }.to_json,
+           { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+      expect(last_response.status).to eq(202)
+      sleep 0.05
+
+      post_discard(session["id"])
+      expect(last_response.status).to eq(409)
+      expect(JSON.parse(last_response.body)["error"]).to eq("agent run in progress")
+
+      wait_for_messages(session["id"], 2)
+
+      post_discard(session["id"])
+      expect(last_response.status).to eq(200)
+    end
+
+    it "returns 422 when the session repo is missing" do
+      id = orphan_session
+      post_discard(id)
+      expect(last_response.status).to eq(422)
+      expect(JSON.parse(last_response.body)["error"]).to eq("repo not found")
+    end
+
+    it "returns 503 when session store or repo store is not configured" do
+      session = create_session
+
+      RelayDaemon::App.set(:session_store, nil)
+      post_discard(session["id"])
+      expect(last_response.status).to eq(503)
+      RelayDaemon::App.set(:session_store, session_store)
+
+      RelayDaemon::App.set(:repo_store, nil)
+      post_discard(session["id"])
+      expect(last_response.status).to eq(503)
+      RelayDaemon::App.set(:repo_store, repo_store)
+    end
+  end
 end

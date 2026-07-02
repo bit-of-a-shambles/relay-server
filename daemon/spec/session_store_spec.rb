@@ -52,6 +52,36 @@ RSpec.describe RelayDaemon::SessionStore do
       expect(Dir.exist?(File.join(worktrees_dir, "missing-repo"))).to be false
     end
   end
+
+  describe "#discard" do
+    it "sets status to discarded and keeps the row" do
+      session = store.create(repo: repo, worktrees_dir: worktrees_dir, id: "session-2")
+
+      discarded = store.discard(session["id"])
+
+      expect(discarded["status"]).to eq("discarded")
+      expect(store.find(session["id"])["status"]).to eq("discarded")
+    end
+  end
+
+  describe "#active_for_repo" do
+    it "returns the active session for a repo" do
+      session = store.create(repo: repo, worktrees_dir: worktrees_dir, id: "session-3")
+
+      expect(store.active_for_repo(repo["id"])["id"]).to eq(session["id"])
+    end
+
+    it "returns nil when there is no active session" do
+      expect(store.active_for_repo(repo["id"])).to be_nil
+    end
+
+    it "excludes a discarded session so a new one can be created" do
+      session = store.create(repo: repo, worktrees_dir: worktrees_dir, id: "session-4")
+      store.discard(session["id"])
+
+      expect(store.active_for_repo(repo["id"])).to be_nil
+    end
+  end
 end
 
 RSpec.describe RelayDaemon::SessionTestStore do

@@ -134,6 +134,25 @@ RSpec.describe RelayDaemon::SessionRunner do
     ])
   end
 
+  it "reports running? true while a run is in flight and false once it finishes" do
+    expect(described_class.running?(session["id"])).to be false
+
+    run = described_class.run_async(
+      session_id: session["id"],
+      content: "slow running check",
+      worktree_path: worktree_path,
+      sessions_log_dir: sessions_log_dir,
+      agent_command: agent_command,
+      db_path: db_path,
+      event_bus: event_bus
+    )
+    sleep 0.05
+    expect(described_class.running?(session["id"])).to be true
+
+    run.join
+    expect(described_class.running?(session["id"])).to be false
+  end
+
   it "builds argv with resume flags" do
     expect(
       described_class.build_argv("agent {prompt}", "hi", session_id: session["id"], resume: false)

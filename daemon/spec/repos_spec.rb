@@ -236,15 +236,45 @@ RSpec.describe RelayDaemon::Git do
       expect { git.worktree_add(existing, branch: "relay/fail") }.to raise_error(described_class::GitError)
     end
 
-    it "raises GitError on worktree_remove for non-worktree path" do
+    it "returns false for worktree_remove on a path that is not a registered worktree" do
       plain = Dir.mktmpdir
-      expect { git.worktree_remove(plain) }.to raise_error(described_class::GitError)
+      expect(git.worktree_remove(plain)).to be false
+    end
+
+    it "raises GitError on worktree_remove for a genuine (non-missing) failure" do
+      dest = Dir.mktmpdir
+      FileUtils.rmdir(dest)
+      branch = "relay/dirty-#{SecureRandom.hex(4)}"
+      git.worktree_add(dest, branch: branch)
+      File.write(File.join(dest, "dirty.txt"), "uncommitted")
+
+      expect { git.worktree_remove(dest, force: false) }.to raise_error(described_class::GitError)
+
+      git.worktree_remove(dest)
+      git.delete_branch(branch)
     end
   end
 
   describe "#delete_branch" do
     it "raises GitError for a non-existent branch" do
       expect { git.delete_branch("relay/does-not-exist") }.to raise_error(described_class::GitError)
+    end
+  end
+
+  describe "#branch_delete" do
+    it "deletes an existing branch and returns true" do
+      branch = "relay/tolerant-#{SecureRandom.hex(4)}"
+      Open3.capture3("git", "-C", dir, "branch", branch)
+      expect(git.branch_delete(branch, force: false)).to be true
+    end
+
+    it "returns false for an already-missing branch instead of raising" do
+      expect(git.branch_delete("relay/does-not-exist")).to be false
+    end
+
+    it "raises GitError for a genuine (non-missing) failure" do
+      current = git.current_branch
+      expect { git.branch_delete(current) }.to raise_error(described_class::GitError)
     end
   end
 
