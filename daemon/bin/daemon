@@ -42,16 +42,19 @@ if __FILE__ == $PROGRAM_NAME
 
   supervisor = nil
   if ENV.fetch("RELAY_SUPERVISE_ROUTER", "1") != "0"
-    router_dir = File.expand_path("../../router", __dir__)
+    if (router_dir_error = config.router_dir_missing_error)
+      abort router_dir_error
+    end
+
     supervisor = RelayDaemon::RouterSupervisor.new(
-      ["npm", "run", "start"],
+      config.router_command,
       env: ENV.select { |k, _| k.start_with?("RELAY_", "OPENROUTER_") }
                .transform_keys { |k| k.to_s },
       backoff: [1, 2, 4, 8],
-      cwd: router_dir
+      cwd: config.router_dir
     )
     supervisor.start
-    warn "daemon: router supervisor started (cwd: #{router_dir})"
+    warn "daemon: router supervisor started (cwd: #{config.router_dir})"
   end
 
   stop = lambda do
