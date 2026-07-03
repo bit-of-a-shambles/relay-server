@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  router:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: router/package-lock.json
+      - name: Install dependencies
+        working-directory: router
+        run: npm ci
+      - name: Build
+        working-directory: router
+        run: npm run build
+      - name: Test
+        working-directory: router
+        run: npm test
+      - name: Coverage
+        working-directory: router
+        run: npm run coverage
+
+  daemon:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+          working-directory: daemon
+      - name: Sorbet typecheck
+        working-directory: daemon
+        run: bundle exec srb tc
+      - name: Test
+        working-directory: daemon
+        run: bundle exec rspec

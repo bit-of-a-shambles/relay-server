@@ -1,0 +1,25 @@
+name: menubar
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "menubar/**"
+  pull_request:
+    paths:
+      - "menubar/**"
+  workflow_dispatch: {}
+
+jobs:
+  menubar:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install xcodegen
+        run: command -v xcodegen >/dev/null || brew install xcodegen
+      - name: Generate project
+        working-directory: menubar
+        run: xcodegen generate
+      - name: Test
+        working-directory: menubar
+        run: xcodebuild test -project RelayMenuBar.xcodeproj -scheme RelayMenuBar -destination 'platform=macOS'
