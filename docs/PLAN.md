@@ -1,19 +1,20 @@
 # Relay Plan
 
-Relay is a mobile remote for a local Mac coding agent. The iOS app gives the
-developer a continuous Codex-like chat against a repo on their Mac; the Mac
-daemon runs the agent locally; the router intercepts model calls and chooses
+Relay is a mobile remote for a local Mac coding agent. A companion iOS app
+(closed-source, separate private repo) gives the developer a continuous
+Codex-like chat against a repo on their Mac; the Mac daemon in this repo runs
+the agent locally; the router in this repo intercepts model calls and chooses
 cheap or frontier models based on policy, overrides, and verified outcomes.
 
 ## Product Model
 
 The active primitive is a repo-scoped chat session:
 
-1. The user pairs the iPhone with the Mac daemon over Tailscale or LAN.
-2. The user registers or selects a local Git repo from the iOS app.
+1. The client pairs with the Mac daemon over Tailscale or LAN.
+2. The user registers or selects a local Git repo.
 3. Relay opens one active `chat_session` for that repo, backed by a persistent
    session worktree and branch.
-4. Each iOS message is appended to `messages` and sent to the local coding
+4. Each client message is appended to `messages` and sent to the local coding
    agent in that session worktree.
 5. Agent output, assistant replies, diffs, tests, and approvals appear in one
    chat timeline instead of separate task screens.
@@ -25,11 +26,9 @@ The active primitive is a repo-scoped chat session:
 ## Components
 
 ```text
-relay/
-  router/     TypeScript Anthropic-compatible cost router
-  daemon/     Ruby + Sorbet Mac service, SQLite, Git worktrees, pairing
-  ios/        SwiftUI iPhone client
-  menubar/    Swift macOS status item wrapper
+router/     TypeScript Anthropic-compatible cost router
+daemon/     Ruby + Sorbet Mac service, SQLite, Git worktrees, pairing
+menubar/    Swift macOS status item wrapper
 ```
 
 The router and daemon are separate local processes. The daemon supervises the
@@ -133,27 +132,12 @@ The old physical `tasks` table and `llm_calls.task_id` column may remain in the
 SQLite schema as read-only historical data to preserve old cost/eval records.
 They are not active API primitives and should not be used by new product code.
 
-## iOS App
-
-The app is a dark-mode-first SwiftUI chat client:
-
-- Pairing screen: QR scan and pairing-code fallback.
-- Home: repo list, file-browser-based repo registration, dashboard link.
-- Repo chat: one continuous timeline of user messages, assistant replies, live
-  agent output, diff summaries, test results, and approval activity.
-- Composer: model picker, eval-learning toggle, multiline message entry, send.
-- Session actions: diff, run tests, approve.
-- Dashboard: spend, savings vs frontier, outcome success, first-try pass rate,
-  and per-model verified outcomes.
-
-The iOS app does not create or display task-only screens.
-
 ## Security
 
 - All daemon REST/WS routes require bearer auth except `/healthz` and `/pair/*`.
 - Pairing codes are single-use, expire quickly, and exchange for random tokens.
 - The daemon refuses unsafe public binds unless explicitly overridden.
-- The OpenRouter key stays on the Mac/router side and is never sent to iOS.
+- The OpenRouter key stays on the Mac/router side and is never sent to a client.
 - Agent commands run in isolated session worktrees and merge only after user
   approval.
 
@@ -176,14 +160,6 @@ bundle exec srb tc
 bundle exec rspec
 ```
 
-iOS:
-
-```bash
-cd ios
-xcodegen generate
-xcodebuild test -project Relay.xcodeproj -scheme Relay -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.5'
-```
-
 macOS menu bar:
 
 ```bash
@@ -191,10 +167,3 @@ cd menubar
 xcodegen generate
 xcodebuild test -project RelayMenuBar.xcodeproj -scheme RelayMenuBar -destination 'platform=macOS'
 ```
-
-## Release
-
-For TestFlight, bump `CFBundleVersion` in `ios/project.yml`, run
-`xcodegen generate`, confirm the generated plist version, then run
-`ios/scripts/testflight_upload.sh` using the App Store Connect API key
-configuration documented in `AGENTS.md`.

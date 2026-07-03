@@ -1,0 +1,26 @@
+# gitleaks config for the public relay-server repo.
+#
+# `useDefault = true` keeps gitleaks' full built-in rule set (we want it to
+# keep scanning normally); the [[allowlist.regexes]] entries below only
+# suppress the one finding that M53's full-history audit
+# (docs/OPEN_CORE_SPLIT.md in the private monorepo) classified as a known
+# false positive, so real secrets are still caught.
+#
+# Known false positive: `daemon/spec/events_spec.rb` uses the literal
+# `Sec-WebSocket-Key` example value from RFC 6455 section 1.3
+# (`dGhlIHNhbXBsZSBub25jZQ==`, which decodes to "the sample nonce") as a
+# WebSocket-handshake test fixture. It is a well-known public test constant,
+# not a credential. gitleaks' `generic-api-key` rule flags it because it is a
+# high-entropy-looking base64 string in a source file.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "M53-audited false positives (see docs/OPEN_CORE_SPLIT.md in the private repo)"
+regexes = [
+  '''dGhlIHNhbXBsZSBub25jZQ==''',
+]
+paths = [
+  '''daemon/spec/events_spec\.rb''',
+]
