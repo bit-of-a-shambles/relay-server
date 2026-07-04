@@ -1194,7 +1194,7 @@ exists.
 
 ### M56 — Public repo CI (GitHub Actions)
 
-- [ ] M56 complete
+- [x] M56 complete
 
 **Goal:** this repo gets CI so router/daemon/menubar changes are
 checked automatically on every PR and push.
@@ -1203,7 +1203,8 @@ checked automatically on every PR and push.
 
 1. `.github/workflows/ci.yml`: `router` job (ubuntu, Node 22,
    build+test+coverage), `daemon` job (ubuntu, Ruby 3.3 + bundler cache,
-   `srb tc` + `rspec`), `menubar` job (macos-14, `brew install xcodegen`,
+   `srb tc` + `rspec`), `menubar` job (macos-15 — Xcode 16 is needed to
+   open xcodegen's objectVersion-77 projects — `brew install xcodegen`,
    test — path-gated to `menubar/**` to conserve macOS minutes).
 2. Triggers: PR + push to main. No secrets needed (tests are network-free).
 

@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 2026-07-03 (repo split from the private monorepo).
+Last updated: 2026-07-04.
 
 This repository is the public, MIT-licensed extraction of the router +
 daemon + menubar components from Relay's private monorepo (see
@@ -22,6 +22,13 @@ copy of the private repo's status log.
   endpoint, and a custom-provider store.
 - Menubar: daemon lifecycle control (start/stop), QR-based pairing display,
   robust repo-root resolution regardless of launch method.
+- M56 — Public repo CI: `.github/workflows/ci.yml` (router + daemon jobs,
+  green on every main push so far) and `.github/workflows/menubar.yml`
+  (macos-15, path-gated to `menubar/**`). The menubar job's first dispatch
+  run failed on macos-14 (Xcode 15.4 can't open xcodegen's
+  objectVersion-77 project format); fixed by moving to macos-15. A green
+  re-run needs a user-triggered `workflow_dispatch` (agent tokens can't
+  dispatch workflows) or any push touching `menubar/**`.
 
 See `docs/AGENT_PLAYBOOK.md` for the exact milestones this state was built
 from (numbering is inherited from the private monorepo's playbook; gaps are
@@ -29,7 +36,6 @@ private/iOS-only milestones that stayed in the private repo).
 
 ## Next recommended work
 
-- M56 — Public repo CI (GitHub Actions).
 - M57 — Daemon/router install-layout independence (Homebrew prerequisite).
 - M58 — Menubar: installed-daemon discovery + real Settings.
 - M59 — Release script + Homebrew formula.
