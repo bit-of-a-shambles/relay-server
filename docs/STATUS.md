@@ -29,6 +29,13 @@ copy of the private repo's status log.
   objectVersion-77 project format); fixed by moving to macos-15. A green
   re-run needs a user-triggered `workflow_dispatch` (agent tokens can't
   dispatch workflows) or any push touching `menubar/**`.
+- M58 — Menubar installed-daemon discovery + real Settings:
+  `resolveDaemonLaunch` picks `RELAY_DAEMON_BIN`, then Homebrew opt paths,
+  then the dev checkout; installed binaries run directly with
+  `Process.environment` (zsh wrapper only for the dev fallback). Launch
+  env now lives in `DaemonLaunchConfig` (UserDefaults) behind a real
+  Settings pane. Validated on CI's macos-15 runner (menubar workflow now
+  also runs on `claude/**` branch pushes). Root `.gitignore` added.
 - M57 — Daemon/router install-layout independence: `RELAY_ROUTER_DIR` and
   `RELAY_ROUTER_COMMAND` (JSON array or shell-split) with fail-fast when
   the dir is missing. Boot-verified against a prebuilt `dist/`-only router
@@ -41,7 +48,6 @@ private/iOS-only milestones that stayed in the private repo).
 
 ## Next recommended work
 
-- M58 — Menubar: installed-daemon discovery + real Settings.
 - M59 — Release script + Homebrew formula.
 - M60 — Menubar notarization script + cask.
 

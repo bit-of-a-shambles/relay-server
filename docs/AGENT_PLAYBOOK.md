@@ -1245,7 +1245,7 @@ prebuilt router in a temp dir (manual).
 
 ### M58 — Menubar: installed-daemon discovery + real Settings
 
-- [ ] M58 complete
+- [x] M58 complete
 
 **Goal:** the menubar app can find and launch a Homebrew-installed daemon
 binary, not just a dev checkout, and exposes real settings for it.
