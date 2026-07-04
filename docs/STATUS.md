@@ -29,6 +29,11 @@ copy of the private repo's status log.
   objectVersion-77 project format); fixed by moving to macos-15. A green
   re-run needs a user-triggered `workflow_dispatch` (agent tokens can't
   dispatch workflows) or any push touching `menubar/**`.
+- M57 — Daemon/router install-layout independence: `RELAY_ROUTER_DIR` and
+  `RELAY_ROUTER_COMMAND` (JSON array or shell-split) with fail-fast when
+  the dir is missing. Boot-verified against a prebuilt `dist/`-only router
+  copy in a temp dir (daemon on 7777, supervised router answering on
+  7778), with all router/daemon validation gates green.
 
 See `docs/AGENT_PLAYBOOK.md` for the exact milestones this state was built
 from (numbering is inherited from the private monorepo's playbook; gaps are
@@ -36,7 +41,6 @@ private/iOS-only milestones that stayed in the private repo).
 
 ## Next recommended work
 
-- M57 — Daemon/router install-layout independence (Homebrew prerequisite).
 - M58 — Menubar: installed-daemon discovery + real Settings.
 - M59 — Release script + Homebrew formula.
 - M60 — Menubar notarization script + cask.
