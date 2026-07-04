@@ -1218,7 +1218,7 @@ checked automatically on every PR and push.
 
 ### M57 — Daemon/router install-layout independence
 
-- [ ] M57 complete
+- [x] M57 complete
 
 **Goal:** daemon stops assuming it lives in a checkout next to `router/` —
 a Homebrew prerequisite.
