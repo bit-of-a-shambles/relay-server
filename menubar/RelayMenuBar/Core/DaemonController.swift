@@ -40,18 +40,26 @@ final class DaemonController {
         // potentially loopback-only process.
         Self.killPortOwner(17777)
 
-        let root = repoRootPath()
-        let bindHost = Self.preferredBindHost()
+        let config = DaemonLaunchConfig.load(from: .standard)
+        let launch = Self.resolveDaemonLaunch(
+            env: ProcessInfo.processInfo.environment,
+            exists: { FileManager.default.fileExists(atPath: $0) }
+        )
+        let bindHost = Self.preferredBindHost(override: config.bindHostOverride)
         // daemonBaseURL stays at http://127.0.0.1:17777 — the menu bar and daemon
         // are always on the same machine, so loopback is the correct local admin
         // address. The Tailscale bindHost is only for the daemon's own listening
         // socket (so the phone can reach it) and appears in the QR payload URL
         // that the daemon itself computes from RELAY_DAEMON_HOST.
-        let command = Self.daemonCommand(repoRootPath: root, host: bindHost)
+        let spec = Self.launchSpec(for: launch, host: bindHost, agentCommand: config.agentCommand)
 
         let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        p.arguments = ["-lc", command]
+        p.executableURL = URL(fileURLWithPath: spec.executablePath)
+        p.arguments = spec.arguments
+        if !spec.extraEnvironment.isEmpty {
+            p.environment = ProcessInfo.processInfo.environment
+                .merging(spec.extraEnvironment) { _, override in override }
+        }
         p.standardOutput = FileHandle.nullDevice
         p.standardError = FileHandle.nullDevice
 
@@ -105,6 +113,10 @@ final class DaemonController {
     }
 
     func openLogsFolder() {
+        Self.openLogsFolder()
+    }
+
+    static func openLogsFolder() {
         let logs = NSString(string: "~/.relay/tasks").expandingTildeInPath
         NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: logs)
     }
@@ -156,20 +168,108 @@ final class DaemonController {
         return cwdRoot
     }
 
-    static func daemonCommand(repoRootPath: String, host: String) -> String {
+    // MARK: - Launch resolution (installed binary vs dev checkout)
+
+    enum DaemonLaunch: Equatable {
+        /// A Homebrew-installed (or RELAY_DAEMON_BIN-overridden) daemon binary,
+        /// run directly with Process.environment — no shell wrapper.
+        case installed(binaryPath: String)
+        /// A source checkout containing daemon/; launched through zsh so
+        /// `bundle exec` resolves against the checkout's Gemfile.
+        case devCheckout(repoRoot: String)
+    }
+
+    /// Everything Process needs, kept as a value so tests can assert the
+    /// direct-vs-shell selection without spawning anything.
+    struct LaunchSpec: Equatable {
+        let executablePath: String
+        let arguments: [String]
+        /// Merged over the inherited environment; empty for the dev path,
+        /// where the env is inlined into the shell command instead.
+        let extraEnvironment: [String: String]
+    }
+
+    /// Homebrew install locations probed in order (Apple Silicon, then Intel).
+    static let installedDaemonPaths = [
+        "/opt/homebrew/opt/relay/bin/relay-daemon",
+        "/usr/local/opt/relay/bin/relay-daemon"
+    ]
+
+    /// Ordered resolution: RELAY_DAEMON_BIN override (ignored unless it
+    /// exists, matching resolveRepoRoot's treatment of RELAY_REPO_ROOT),
+    /// Homebrew opt paths, then the dev checkout via resolveRepoRoot.
+    static func resolveDaemonLaunch(
+        env: [String: String],
+        exists: (String) -> Bool,
+        cwd: String = FileManager.default.currentDirectoryPath,
+        sourcePath: String = #filePath
+    ) -> DaemonLaunch {
+        if let binOverride = env["RELAY_DAEMON_BIN"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !binOverride.isEmpty, exists(binOverride) {
+            return .installed(binaryPath: binOverride)
+        }
+
+        for path in installedDaemonPaths where exists(path) {
+            return .installed(binaryPath: path)
+        }
+
+        return .devCheckout(repoRoot: resolveRepoRoot(
+            envRoot: env["RELAY_REPO_ROOT"],
+            cwd: cwd,
+            sourcePath: sourcePath,
+            exists: exists
+        ))
+    }
+
+    static func launchSpec(
+        for launch: DaemonLaunch,
+        host: String,
+        agentCommand: String
+    ) -> LaunchSpec {
+        switch launch {
+        case .installed(let binaryPath):
+            return LaunchSpec(
+                executablePath: binaryPath,
+                arguments: [],
+                extraEnvironment: daemonEnvironment(host: host, agentCommand: agentCommand)
+            )
+        case .devCheckout(let repoRoot):
+            return LaunchSpec(
+                executablePath: "/bin/zsh",
+                arguments: ["-lc", daemonCommand(repoRootPath: repoRoot, host: host, agentCommand: agentCommand)],
+                extraEnvironment: [:]
+            )
+        }
+    }
+
+    // ANTHROPIC_* are inherited by the spawned agent so Claude Code's calls
+    // route through the local router → OpenRouter.
+    static func daemonEnvironment(host: String, agentCommand: String) -> [String: String] {
+        [
+            "RELAY_DAEMON_HOST": host,
+            "RELAY_DAEMON_PORT": "17777",
+            "RELAY_AGENT_COMMAND": agentCommand,
+            "ANTHROPIC_BASE_URL": "http://127.0.0.1:7778/api",
+            "ANTHROPIC_API_KEY": "relay-dummy"
+        ]
+    }
+
+    static func daemonCommand(
+        repoRootPath: String,
+        host: String,
+        agentCommand: String = DaemonLaunchConfig.defaultAgentCommand
+    ) -> String {
         let escaped = shellEscape(repoRootPath)
         // Launch via bin/daemon (not rackup): it binds to RELAY_DAEMON_HOST via
         // Puma --bind (rackup ignores the env var and binds loopback only) and
-        // supervises the router. ANTHROPIC_* are inherited by the spawned agent
-        // so Claude Code's calls route through the local router → OpenRouter.
-        let env = [
-            "RELAY_DAEMON_HOST=\(shellEscape(host))",
-            "RELAY_DAEMON_PORT=17777",
-            "RELAY_AGENT_COMMAND='claude -p {prompt} --permission-mode acceptEdits'",
-            "ANTHROPIC_BASE_URL=http://127.0.0.1:7778/api",
-            "ANTHROPIC_API_KEY=relay-dummy"
-        ].joined(separator: " ")
-        return "cd \(escaped)/daemon && \(env) bundle exec ruby bin/daemon"
+        // supervises the router. Every value is shell-escaped because host and
+        // agentCommand are user-editable via Settings.
+        let environment = daemonEnvironment(host: host, agentCommand: agentCommand)
+        let exports = ["RELAY_DAEMON_HOST", "RELAY_DAEMON_PORT", "RELAY_AGENT_COMMAND",
+                       "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY"]
+            .map { "\($0)=\(shellEscape(environment[$0] ?? ""))" }
+            .joined(separator: " ")
+        return "cd \(escaped)/daemon && \(exports) bundle exec ruby bin/daemon"
     }
 
     static func pairingStartURL(baseURL: URL) -> URL {
@@ -225,7 +325,11 @@ extension DaemonController {
         return "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
-    static func preferredBindHost() -> String {
+    static func preferredBindHost(override: String? = nil) -> String {
+        if let override = override?.trimmingCharacters(in: .whitespacesAndNewlines), !override.isEmpty {
+            return override
+        }
+
         let environmentHost = ProcessInfo.processInfo.environment["RELAY_DAEMON_HOST"]?.trimmingCharacters(in: .whitespacesAndNewlines)
         if let environmentHost, !environmentHost.isEmpty {
             return environmentHost
