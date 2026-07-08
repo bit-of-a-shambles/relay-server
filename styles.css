@@ -1,0 +1,154 @@
+:root {
+  color-scheme: dark;
+  --bg: #101219;
+  --panel: #1f2330;
+  --text: #f5f7fb;
+  --muted: #a7aab5;
+  --accent: #31c38a;
+  --line: #343848;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  line-height: 1.55;
+}
+
+a {
+  color: var(--accent);
+}
+
+.page {
+  width: min(1040px, calc(100% - 40px));
+  margin: 0 auto;
+  padding: 72px 0;
+}
+
+.hero {
+  min-height: 58vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.eyebrow {
+  color: var(--accent);
+  font-weight: 700;
+  letter-spacing: 0;
+  margin: 0 0 16px;
+}
+
+h1 {
+  font-size: clamp(44px, 8vw, 82px);
+  line-height: 0.98;
+  letter-spacing: 0;
+  margin: 0;
+  max-width: 860px;
+}
+
+h2 {
+  font-size: 22px;
+  margin: 0 0 12px;
+}
+
+p {
+  font-size: 18px;
+}
+
+.lede {
+  color: var(--muted);
+  max-width: 680px;
+  font-size: 22px;
+  margin: 24px 0 0;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 32px;
+}
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 0 18px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #07120e;
+  text-decoration: none;
+  font-weight: 700;
+}
+
+.button.secondary {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 18px;
+  margin-top: 24px;
+}
+
+article,
+.install {
+  border-top: 1px solid var(--line);
+  padding-top: 18px;
+}
+
+article p,
+.install p,
+.legal p {
+  color: var(--muted);
+}
+
+pre {
+  overflow-x: auto;
+  background: #090b10;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 18px;
+}
+
+.install {
+  margin-top: 48px;
+}
+
+.legal {
+  max-width: 760px;
+}
+
+.legal h1 {
+  font-size: clamp(38px, 7vw, 64px);
+  margin-bottom: 20px;
+}
+
+.legal h2 {
+  margin-top: 36px;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+@media (max-width: 760px) {
+  .page {
+    width: min(100% - 28px, 1040px);
+    padding: 48px 0;
+  }
+
+  .grid {
+    grid-template-columns: 1fr;
+  }
+}
