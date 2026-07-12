@@ -1,57 +1,43 @@
 # Status
 
-Last updated: 2026-07-04.
+Last updated: 2026-07-13.
 
 This repository is the public, MIT-licensed extraction of the router +
 daemon + menubar components from Relay's private monorepo (see
 [docs/PLAN.md](PLAN.md) for architecture). The private monorepo retains full
 history and the iOS client; this repo starts fresh at the split point rather
-than carrying that history over, so this file begins here rather than as a
-copy of the private repo's status log.
+than carrying that history over.
 
-## Completed (carried into this repo working, tested, at 100% coverage)
+## Completed
 
 - Router: Anthropic Messages API compatible cost router with tiered routing,
   quality-dial and per-message overrides, escalation-on-failure retries,
   named upstream provider support (`providerName::model-id`), and full call
   logging (JSONL + HTTP sink to the daemon).
-- Daemon: pairing (QR + claim tokens), repo registration, chat-session
-  lifecycle (create/message/diff/test/approve/discard) over isolated Git
-  worktrees, SQLite persistence with per-thread connection safety, the
-  outcome-verified eval dataset and routing-config writer, a model catalog
-  endpoint, and a custom-provider store.
-- Menubar: daemon lifecycle control (start/stop), QR-based pairing display,
-  robust repo-root resolution regardless of launch method.
-- M56 — Public repo CI: `.github/workflows/ci.yml` (router + daemon jobs,
-  green on every main push so far) and `.github/workflows/menubar.yml`
-  (macos-15, path-gated to `menubar/**`). The menubar job's first dispatch
-  run failed on macos-14 (Xcode 15.4 can't open xcodegen's
-  objectVersion-77 project format); fixed by moving to macos-15. A green
-  re-run needs a user-triggered `workflow_dispatch` (agent tokens can't
-  dispatch workflows) or any push touching `menubar/**`.
-- M58 — Menubar installed-daemon discovery + real Settings:
-  `resolveDaemonLaunch` picks `RELAY_DAEMON_BIN`, then Homebrew opt paths,
-  then the dev checkout; installed binaries run directly with
-  `Process.environment` (zsh wrapper only for the dev fallback). Launch
-  env now lives in `DaemonLaunchConfig` (UserDefaults) behind a real
-  Settings pane. Validated on CI's macos-15 runner (menubar workflow now
-  also runs on `claude/**` branch pushes). Root `.gitignore` added.
-- M57 — Daemon/router install-layout independence: `RELAY_ROUTER_DIR` and
-  `RELAY_ROUTER_COMMAND` (JSON array or shell-split) with fail-fast when
-  the dir is missing. Boot-verified against a prebuilt `dist/`-only router
-  copy in a temp dir (daemon on 7777, supervised router answering on
-  7778), with all router/daemon validation gates green.
+- Daemon: pairing, repository registration, chat-session lifecycle over
+  isolated Git worktrees, SQLite persistence, outcome-verified evaluation,
+  model catalog, and custom-provider storage.
+- Menubar: daemon lifecycle control, QR pairing, installed-daemon discovery,
+  and persisted launch settings.
+- M56: public repository CI for router, daemon, and menubar.
+- M57: daemon/router install-layout independence.
+- M58: installed-daemon discovery and real menubar Settings.
+- M59: deterministic release tarball/checksum/formula generation, a public
+  Homebrew formula template, and local formula acceptance tooling.
 
 See `docs/AGENT_PLAYBOOK.md` for the exact milestones this state was built
-from (numbering is inherited from the private monorepo's playbook; gaps are
-private/iOS-only milestones that stayed in the private repo).
+from. Numbering is inherited from the private monorepo; gaps are private or
+iOS-only milestones.
 
-## Next recommended work
+## Next Recommended Work
 
-- M59 — Release script + Homebrew formula.
-- M60 — Menubar notarization script + cask.
+- M60: notarized menubar cask, blocked until a Developer ID Application
+  certificate and private key are installed on the release Mac.
+- M67-M68: privacy-preserving push relay and daemon forwarding can proceed
+  independently of M60.
 
 ## Blocked
 
-Nothing blocked as of the split. M61 (first public release + brew
-acceptance) is a user task pending M56-M60.
+- M60 requires an Account Holder-provisioned Developer ID Application
+  certificate. The release Mac currently has no such signing identity.
+- M61 is the first public release and Homebrew acceptance user task after M60.
