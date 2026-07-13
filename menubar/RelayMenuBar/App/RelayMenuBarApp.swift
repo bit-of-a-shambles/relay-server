@@ -6,9 +6,7 @@ struct RelayMenuBarApp: App {
 
     var body: some Scene {
         Settings {
-            Text("Relay Menu Bar")
-                .padding()
-                .frame(width: 300, height: 120)
+            SettingsView()
         }
     }
 }
