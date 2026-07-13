@@ -1349,7 +1349,7 @@ accepted.
 
 ### M67 — Push relay worker
 
-- [ ] M67 complete
+- [x] M67 complete
 
 **Goal:** a minimal, privacy-preserving push relay exists as its own
 service, tested like the router.
