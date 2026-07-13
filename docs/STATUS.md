@@ -24,6 +24,8 @@ than carrying that history over.
 - M58: installed-daemon discovery and real menubar Settings.
 - M59: deterministic release tarball/checksum/formula generation, a public
   Homebrew formula template, and local formula acceptance tooling.
+- Push relay: authenticated, privacy-preserving APNs forwarding with cached
+  ES256 JWTs, bounded request/rate limits, and outbound deadlines.
 
 See `docs/AGENT_PLAYBOOK.md` for the exact milestones this state was built
 from. Numbering is inherited from the private monorepo; gaps are private or
@@ -33,7 +35,7 @@ iOS-only milestones.
 
 - M60: notarized menubar cask, blocked until a Developer ID Application
   certificate and private key are installed on the release Mac.
-- M67-M68: privacy-preserving push relay and daemon forwarding can proceed
+- M68: daemon device-token storage and push forwarding can proceed
   independently of M60.
 
 ## Blocked

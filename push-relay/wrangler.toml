@@ -1,0 +1,8 @@
+name = "relay-push-relay"
+main = "src/index.ts"
+compatibility_date = "2026-07-13"
+
+# Set these with `wrangler secret put`; secret values never belong in this file.
+# Required: APNS_KEY_P8, APNS_KEY_ID, APNS_TEAM_ID, RELAY_SHARED_SECRET.
+[observability]
+enabled = false
