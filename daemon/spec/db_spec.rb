@@ -21,7 +21,7 @@ RSpec.describe RelayDaemon::Db do
     it "creates all required tables" do
       expect(table_names(db)).to include(
         "repos", "tasks", "llm_calls", "chat_sessions", "messages",
-        "session_test_runs", "schema_migrations"
+        "session_test_runs", "push_devices", "schema_migrations"
       )
     end
 
@@ -33,7 +33,8 @@ RSpec.describe RelayDaemon::Db do
         "001_initial_schema",
         "002_add_base_commit",
         "006_chat_sessions",
-        "007_session_eval_attribution"
+        "007_session_eval_attribution",
+        "012_push_devices"
       )
     end
 
@@ -92,6 +93,16 @@ RSpec.describe RelayDaemon::Db do
                .map { |r| r["name"] }
       expect(cols).to include("id", "session_id", "tests_passed", "created_at")
     end
+
+    it "push_devices table has the expected columns and uniqueness" do
+      cols = db.connection
+               .execute("PRAGMA table_info(push_devices)")
+               .map { |r| r["name"] }
+      expect(cols).to eq(["device_token", "created_at"])
+
+      indexes = db.connection.execute("PRAGMA index_list(push_devices)")
+      expect(indexes.any? { |index| index["unique"] == 1 }).to be true
+    end
   end
 
   describe "idempotency" do
@@ -146,6 +157,23 @@ RSpec.describe RelayDaemon::Db do
       first = db.connection
       second = db.connection
       expect(first.object_id).to eq(second.object_id)
+    end
+
+    it "closes and clears only the current thread connection so it can reopen safely" do
+      db.connection
+      results = Queue.new
+      worker = Thread.new do
+        results << db.close_current_connection
+        first = db.connection
+        results << db.close_current_connection
+        second = db.connection
+        results << (first.object_id != second.object_id)
+        results << db.close_current_connection
+      end
+      worker.join
+
+      expect(4.times.map { results.pop }).to eq([false, true, true, true])
+      expect(db.connection).not_to be_nil
     end
 
     it "lets many threads insert and read concurrently without BusyException or lost writes" do

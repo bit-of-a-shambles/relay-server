@@ -4,8 +4,42 @@ require "spec_helper"
 require "relay_daemon/db"
 require "relay_daemon/event_bus"
 require "relay_daemon/repo_store"
+require "relay_daemon/push_notifier"
 require "relay_daemon/session_runner"
 require "relay_daemon/session_store"
+require "timeout"
+
+class SessionPushHttp
+  include RelayDaemon::PushHttp
+
+  attr_reader :requests
+
+  def initialize
+    @requests = []
+  end
+
+  def post(uri, body, headers, timeout)
+    @requests << { uri: uri, body: body, headers: headers, timeout: timeout }
+    200
+  end
+end
+
+class SessionBlockingPushHttp
+  include RelayDaemon::PushHttp
+
+  attr_reader :started, :release
+
+  def initialize
+    @started = Queue.new
+    @release = Queue.new
+  end
+
+  def post(_uri, _body, _headers, _timeout)
+    @started << true
+    @release.pop
+    200
+  end
+end
 
 RSpec.describe RelayDaemon::SessionRunner do
   let(:db_path) { File.join(Dir.mktmpdir, "test.sqlite3") }
@@ -168,6 +202,67 @@ RSpec.describe RelayDaemon::SessionRunner do
 
     run.join
     expect(described_class.running?(session["id"])).to be false
+  end
+
+  it "notifies after storing the finished agent run" do
+    device_store = RelayDaemon::PushDeviceStore.new(db)
+    device_store.create(device_token: "a1" * 8)
+    http = SessionPushHttp.new
+    notifier = RelayDaemon::PushNotifier.new(
+      relay_url: "https://push.example.test/push",
+      relay_token: "relay-secret",
+      environment: "production",
+      device_store: device_store,
+      http: http
+    )
+
+    described_class.run_async(
+      session_id: session["id"],
+      content: "notify me",
+      worktree_path: worktree_path,
+      sessions_log_dir: sessions_log_dir,
+      agent_command: agent_command,
+      db_path: db_path,
+      event_bus: event_bus,
+      push_notifier: notifier
+    ).join
+
+    expect(notifier.wait_until_idle(timeout: 1.0)).to be true
+    expect(http.requests.length).to eq(1)
+    expect(JSON.parse(http.requests.first[:body])).to include(
+      "deviceToken" => "a1" * 8, "category" => "agent_finished", "environment" => "production"
+    )
+    expect(notifier.shutdown(timeout: 1.0)).to be true
+  end
+
+  it "releases the session lock while background push delivery is blocked" do
+    device_store = RelayDaemon::PushDeviceStore.new(db)
+    device_store.create(device_token: "a1" * 8)
+    http = SessionBlockingPushHttp.new
+    notifier = RelayDaemon::PushNotifier.new(
+      relay_url: "https://push.example.test/push",
+      relay_token: "relay-secret",
+      environment: "production",
+      device_store: device_store,
+      http: http
+    )
+
+    run = described_class.run_async(
+      session_id: session["id"],
+      content: "do not block",
+      worktree_path: worktree_path,
+      sessions_log_dir: sessions_log_dir,
+      agent_command: agent_command,
+      db_path: db_path,
+      event_bus: event_bus,
+      push_notifier: notifier
+    )
+
+    expect(Timeout.timeout(2) { run.join }).to eq(run)
+    Timeout.timeout(1) { http.started.pop }
+    expect(described_class.running?(session["id"])).to be false
+    http.release << true
+    expect(notifier.shutdown(timeout: 1.0)).to be true
   end
 
   it "builds argv with resume flags" do

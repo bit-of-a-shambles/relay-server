@@ -1380,7 +1380,7 @@ green.
 
 ### M68 — Daemon: device tokens + push forwarding
 
-- [ ] M68 complete
+- [x] M68 complete
 
 **Goal:** the daemon stores push device tokens and forwards agent-finished/
 tests-finished events to the push relay.
@@ -1402,3 +1402,54 @@ tests-finished events to the push relay.
 POST per device.
 
 **Validate:** `cd daemon && bundle exec srb tc && bundle exec rspec`
+
+---
+
+### M70 — **User task:** APNs key + worker deploy + E2E
+
+- [ ] M70 complete
+
+**Goal:** **User task.** Provision the APNs key, deploy the push relay
+worker, and run an end-to-end push test. The agent stops here per AGENTS.md
+stop conditions (Apple developer portal and Cloudflare account actions
+require the user's credentials).
+
+**Steps:**
+
+1. Create an APNs auth key (.p8) in the Apple developer portal.
+2. Generate one relay shared secret without printing or committing it, deploy
+   the push-relay worker, and set its four secrets (`APNS_KEY_P8`,
+   `APNS_KEY_ID`, `APNS_TEAM_ID`, `RELAY_SHARED_SECRET`). The same generated
+   value must be used for the daemon's `RELAY_PUSH_RELAY_TOKEN`:
+
+   ```bash
+   RELAY_SHARED_SECRET="$(openssl rand -hex 32)"
+   printf '%s' "$RELAY_SHARED_SECRET" | npx wrangler secret put RELAY_SHARED_SECRET
+   npx wrangler deploy
+   ```
+
+3. Configure the Mac user launch environment before launching/relaunching the
+   menu bar app. The URL must be HTTPS with the exact `/push` path; the menu bar
+   passes these values to the daemon without persisting the secret:
+
+   ```bash
+   launchctl setenv RELAY_PUSH_RELAY_URL 'https://<worker-host>/push'
+   launchctl setenv RELAY_PUSH_RELAY_TOKEN "$RELAY_SHARED_SECRET"
+   launchctl setenv RELAY_PUSH_ENVIRONMENT production
+   unset RELAY_SHARED_SECRET
+   osascript -e 'quit app "RelayMenuBar"' 2>/dev/null || true
+   open -a RelayMenuBar
+   ```
+
+   Use `launchctl unsetenv` for all three names to disable/remove this
+   configuration. Never put the shared secret in the repo, logs, command
+   output, or menu bar defaults.
+4. Enable the iOS notification toggle (M69).
+5. Run a session, lock the phone, and confirm receipt of "Relay: agent
+   finished".
+
+**Done when:** the end-to-end push is received; recorded in
+`docs/STATUS.md`.
+
+**Validate:** No automated validate command — manual end-to-end push test,
+recorded in `docs/STATUS.md`.

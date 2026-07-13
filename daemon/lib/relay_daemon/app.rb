@@ -15,6 +15,8 @@ require_relative "bind_safety"
 require_relative "model_catalog"
 require_relative "pairing_service"
 require_relative "provider_store"
+require_relative "push_device_store"
+require_relative "push_notifier"
 require_relative "repo_store"
 require_relative "eval_store"
 require_relative "routing_config_writer"
@@ -25,6 +27,8 @@ require_relative "ws_handler"
 
 module RelayDaemon
   class App < Sinatra::Base
+    MAX_PUSH_DEVICE_BODY_BYTES = 512
+
     set :show_exceptions, false
     # Local REST API — no browser clients, no CSRF surface.
     disable :protection
@@ -43,6 +47,8 @@ module RelayDaemon
     set :event_bus, RelayDaemon::EventBus.new
     set :ws_upgrader, RelayDaemon::FayeUpgrader
     set :pairing_service, nil # RelayDaemon::PairingService; tests and bin/daemon inject
+    set :push_device_store, nil # RelayDaemon::PushDeviceStore; tests and bin/daemon inject
+    set :push_notifier, nil # RelayDaemon::PushNotifier; tests and bin/daemon inject
 
     # Websockets are handled in middleware (before Sinatra) because the
     # hijacked response must reach the server without post-processing.
@@ -308,6 +314,50 @@ module RelayDaemon
       ""
     end
 
+    # ----- Push devices -----
+
+    post "/push/devices" do
+      content_type :json
+
+      body_str = request.body.read(MAX_PUSH_DEVICE_BODY_BYTES + 1)
+      if body_str.bytesize > MAX_PUSH_DEVICE_BODY_BYTES
+        halt 413, JSON.generate({ error: "request body too large" })
+      end
+      data = begin
+        JSON.parse(body_str)
+      rescue JSON::ParserError
+        halt 400, JSON.generate({ error: "invalid JSON" })
+      end
+
+      unless data.is_a?(Hash) &&
+             data["deviceToken"].is_a?(String) &&
+             RelayDaemon::PushDeviceStore.valid_device_token?(data["deviceToken"])
+        halt 422, JSON.generate({ error: "deviceToken must be 16..128 even-length hex characters" })
+      end
+
+      store = settings.push_device_store
+      halt 503, JSON.generate({ error: "push device store not configured" }) if store.nil?
+
+      existing = store.find(data["deviceToken"])
+      device = store.create(device_token: data["deviceToken"])
+
+      status existing.nil? ? 201 : 200
+      JSON.generate(device)
+    end
+
+    delete "/push/devices/:token" do
+      content_type :json
+      unless RelayDaemon::PushDeviceStore.valid_device_token?(params[:token])
+        halt 422, JSON.generate({ error: "deviceToken must be 16..128 even-length hex characters" })
+      end
+      store = settings.push_device_store
+      halt 503, JSON.generate({ error: "push device store not configured" }) if store.nil?
+      halt 404, JSON.generate({ error: "not found" }) unless store.delete(params[:token])
+
+      status 204
+      ""
+    end
+
     # ----- Internal call-log ingestion -----
 
     post "/internal/llm-calls" do
@@ -441,7 +491,8 @@ module RelayDaemon
         router_base_url: settings.relay_config.router_base_url,
         run_id: run_id,
         append_user: false,
-        resume: resume
+        resume: resume,
+        push_notifier: settings.push_notifier
       )
       status 202
       JSON.generate({ "id" => message["id"] })
@@ -499,6 +550,7 @@ module RelayDaemon
       test_store = RelayDaemon::SessionTestStore.new(db, session_store)
       if test_command.nil? || test_command.empty?
         test_store.record(session_id: session["id"], tests_passed: nil)
+        settings.push_notifier&.notify(RelayDaemon::PushNotifier::TESTS_FINISHED)
         result = { "testsPassed" => nil }
       else
         log_path = File.join(settings.relay_config.agent_log_dir, "sessions", session["id"], "test.log")
@@ -508,6 +560,7 @@ module RelayDaemon
         _, test_status = Process.wait2(pid)
         tests_passed = test_status.success?
         test_store.record(session_id: session["id"], tests_passed: tests_passed)
+        settings.push_notifier&.notify(RelayDaemon::PushNotifier::TESTS_FINISHED)
         result = { "testsPassed" => tests_passed }
 
         if tests_passed == false && auto_retry
@@ -546,7 +599,8 @@ module RelayDaemon
             run_id: run_id,
             append_user: false,
             resume: true,
-            escalated: true
+            escalated: true,
+            push_notifier: settings.push_notifier
           )
         end
       end
