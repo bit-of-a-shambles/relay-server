@@ -54,6 +54,9 @@ bundle exec rspec
 | `RELAY_AGENT_COMMAND` | unset | Agent command template; `{prompt}` becomes one argv element |
 | `RELAY_ROUTER_BASE_URL` | unset | Router base URL, usually `http://127.0.0.1:7778/api` |
 | `RELAY_ROUTING_CONFIG` | unset | Routing config path the daemon may rewrite from eval outcomes |
+| `RELAY_PUSH_RELAY_URL` | unset | Push Worker HTTPS URL with exact `/push` path; requires relay token |
+| `RELAY_PUSH_RELAY_TOKEN` | unset | Bearer secret matching Worker `RELAY_SHARED_SECRET`; never logged |
+| `RELAY_PUSH_ENVIRONMENT` | `production` | APNs environment: `production` or `sandbox` |
 | `RELAY_SUPERVISE_ROUTER` | `1` | Set `0` to run daemon without starting the router |
 
 ## Agent Command

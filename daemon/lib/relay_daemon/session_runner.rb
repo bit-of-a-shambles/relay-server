@@ -6,6 +6,7 @@ require "securerandom"
 require "sorbet-runtime"
 require_relative "db"
 require_relative "event_bus"
+require_relative "push_notifier"
 require_relative "session_store"
 
 module RelayDaemon
@@ -38,10 +39,11 @@ module RelayDaemon
           run_id: T.nilable(String),
           append_user: T::Boolean,
           resume: T.nilable(T::Boolean),
-          escalated: T::Boolean
+          escalated: T::Boolean,
+          push_notifier: T.nilable(PushNotifier)
         ).returns(Thread)
       end
-      def run_async(session_id:, content:, worktree_path:, sessions_log_dir:, agent_command:, db_path:, event_bus:, agent_env: {}, router_base_url: nil, run_id: nil, append_user: true, resume: nil, escalated: false)
+      def run_async(session_id:, content:, worktree_path:, sessions_log_dir:, agent_command:, db_path:, event_bus:, agent_env: {}, router_base_url: nil, run_id: nil, append_user: true, resume: nil, escalated: false, push_notifier: nil)
         Thread.new do
           lock_for(session_id).synchronize do
             run_once(
@@ -57,7 +59,8 @@ module RelayDaemon
               run_id: run_id,
               append_user: append_user,
               resume: resume,
-              escalated: escalated
+              escalated: escalated,
+              push_notifier: push_notifier
             )
           end
         end
@@ -95,10 +98,11 @@ module RelayDaemon
           run_id: T.nilable(String),
           append_user: T::Boolean,
           resume: T.nilable(T::Boolean),
-          escalated: T::Boolean
+          escalated: T::Boolean,
+          push_notifier: T.nilable(PushNotifier)
         ).void
       end
-      def run_once(session_id:, content:, worktree_path:, sessions_log_dir:, agent_command:, db_path:, event_bus:, agent_env:, router_base_url:, run_id:, append_user:, resume:, escalated: false)
+      def run_once(session_id:, content:, worktree_path:, sessions_log_dir:, agent_command:, db_path:, event_bus:, agent_env:, router_base_url:, run_id:, append_user:, resume:, escalated: false, push_notifier: nil)
         run_id ||= SecureRandom.uuid
         db = Db.new(db_path)
         session_store = SessionStore.new(db)
@@ -149,6 +153,7 @@ module RelayDaemon
           content: assistant_content,
           agent_run_id: run_id
         )
+        push_notifier&.notify(PushNotifier::AGENT_FINISHED)
       ensure
         db.connection.close
       end
