@@ -37,6 +37,23 @@ brew install --cask relay-menubar   # optional macOS menu-bar wrapper
 Until a tap exists, run from source — see `router/README.md` and
 `daemon/README.md` for install/run instructions.
 
+To validate a release locally before publishing it, assemble a tarball without
+creating a GitHub release. The script emits a literal local formula and a
+literal tap formula, both pinned to that tarball's version and checksum:
+
+```bash
+scripts/release.sh --dry-run v0.1.0
+brew tap-new --no-git relaydev/relay-acceptance
+cp dist/releases/relay-local.rb "$(brew --repo relaydev/relay-acceptance)/Formula/relay.rb"
+brew install --build-from-source relaydev/relay-acceptance/relay
+brew test relaydev/relay-acceptance/relay
+brew uninstall relaydev/relay-acceptance/relay
+brew untap relaydev/relay-acceptance
+```
+
+The generated `dist/releases/relay.rb` is the formula artifact for the public
+tap. `packaging/homebrew/relay.rb` is its renderable, style-checked template.
+
 ## Contributing
 
 This project is built milestone-by-milestone from

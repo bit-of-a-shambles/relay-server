@@ -1276,7 +1276,7 @@ resolver.
 
 ### M59 — Release script + Homebrew formula
 
-- [ ] M59 complete
+- [x] M59 complete
 
 **Goal:** a scripted release process produces a tarball and a Homebrew
 formula that installs the daemon + router.
@@ -1303,6 +1303,17 @@ local tarball serves `/healthz` (manual, this Mac); release dry-run
 produces a valid tarball.
 
 **Validate:** `bash -n scripts/release.sh && brew style packaging/homebrew/relay.rb`
+
+**Actual execution (2026-07-12):** `scripts/release.sh --dry-run v0.1.0`
+ran every router/daemon gate, assembled a tracked-files-only tarball, and
+rendered literal local/public formulas pinned to its version and SHA-256.
+The local formula was installed from a temporary Homebrew tap with brewed
+Ruby/Node; `brew test` booted the installed daemon and supervised router and
+received a successful `/healthz` response. Strong review drove fixes for
+Homebrew environment filtering, formula version/checksum drift, explicit
+public-repository release targeting, ignored-file/secret exclusion, public
+split coverage, startup retry behavior, and UTF-8 locale handling. The test
+installation and temporary tap were removed afterward.
 
 ---
 
