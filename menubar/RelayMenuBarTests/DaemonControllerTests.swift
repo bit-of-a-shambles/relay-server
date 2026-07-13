@@ -52,10 +52,10 @@ final class DaemonControllerTests: XCTestCase {
 
         XCTAssertTrue(command.contains("cd '/Users/test/relay'/daemon"))
         XCTAssertTrue(command.contains("RELAY_DAEMON_HOST='100.66.254.122'"))
-        XCTAssertTrue(command.contains("RELAY_DAEMON_PORT=17777"))
+        XCTAssertTrue(command.contains("RELAY_DAEMON_PORT='17777'"))
         XCTAssertTrue(command.contains("bundle exec ruby bin/daemon"))
         XCTAssertTrue(command.contains("RELAY_AGENT_COMMAND='claude -p {prompt} --permission-mode acceptEdits'"))
-        XCTAssertTrue(command.contains("ANTHROPIC_BASE_URL=http://127.0.0.1:7778/api"))
+        XCTAssertTrue(command.contains("ANTHROPIC_BASE_URL='http://127.0.0.1:7778/api'"))
         XCTAssertFalse(command.contains("rackup"))
     }
 
