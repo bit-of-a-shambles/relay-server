@@ -132,6 +132,8 @@ module RelayDaemon
         File.open(log_path, "w") do |log|
           reader.each_line do |line|
             log.write(line)
+            next unless publish_agent_line?(line)
+
             lines << line
             event_bus.publish(
               type: "agent.event",
@@ -156,6 +158,15 @@ module RelayDaemon
         push_notifier&.notify(PushNotifier::AGENT_FINISHED)
       ensure
         db.connection.close
+      end
+
+      sig { params(line: String).returns(T::Boolean) }
+      def publish_agent_line?(line)
+        normalized = line.downcase
+        return false if normalized.include?("claude.ai connectors are disabled") &&
+          normalized.include?("anthropic_api_key")
+
+        true
       end
     end
   end

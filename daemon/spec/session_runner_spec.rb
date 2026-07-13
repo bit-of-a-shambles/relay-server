@@ -103,6 +103,34 @@ RSpec.describe RelayDaemon::SessionRunner do
     expect(agent_events.map { |event| event["payload"]["line"] }).to include("prompt=log me")
   end
 
+  it "keeps known Claude auth advisories out of live output and assistant messages" do
+    events = []
+    event_bus.subscribe { |event| events << event }
+
+    described_class.run_async(
+      session_id: session["id"],
+      content: "quiet warning",
+      worktree_path: worktree_path,
+      sessions_log_dir: sessions_log_dir,
+      agent_command: [
+        "ruby",
+        "-e",
+        "puts 'claude.ai connectors are disabled because ANTHROPIC_API_KEY or another auth source is set and takes precedence over your claude.ai login. Unset it to load your organization connectors'; puts 'real agent output'"
+      ],
+      db_path: db_path,
+      event_bus: event_bus
+    ).join
+
+    agent_events = events.select { |event| event["type"] == "agent.event" }
+    event_lines = agent_events.map { |event| event["payload"]["line"] }
+    messages = message_store.list_for_session(session["id"])
+    logs = Dir.glob(File.join(sessions_log_dir, session["id"], "runs", "*.log"))
+
+    expect(event_lines).to eq(["real agent output"])
+    expect(messages.last["content"]).to eq("real agent output")
+    expect(File.read(logs.first)).to include("claude.ai connectors are disabled")
+  end
+
   it "sets session-scoped routing environment for the agent process" do
     described_class.run_async(
       session_id: session["id"],
