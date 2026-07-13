@@ -12,6 +12,9 @@ RSpec.describe RelayDaemon::Config do
       saved = ENV.to_hash
       ENV.delete("RELAY_ROUTER_DIR")
       ENV.delete("RELAY_ROUTER_COMMAND")
+      ENV.delete("RELAY_PUSH_RELAY_URL")
+      ENV.delete("RELAY_PUSH_RELAY_TOKEN")
+      ENV.delete("RELAY_PUSH_ENVIRONMENT")
       ENV["RELAY_DAEMON_TOKEN"] = "t"
       example.run
       ENV.replace(saved)
@@ -52,6 +55,66 @@ RSpec.describe RelayDaemon::Config do
     it "raises when RELAY_ROUTER_COMMAND starts with [ but is malformed JSON" do
       ENV["RELAY_ROUTER_COMMAND"] = "[not valid json"
       expect { described_class.from_env }.to raise_error(JSON::ParserError)
+    end
+
+    it "disables push forwarding when RELAY_PUSH_RELAY_URL is unset" do
+      config = described_class.from_env
+      expect(config.push_relay_url).to be_nil
+      expect(config.push_relay_token).to be_nil
+      expect(config.push_environment).to eq("production")
+    end
+
+    it "reads a valid paired push relay configuration" do
+      ENV["RELAY_PUSH_RELAY_URL"] = "https://push.example.test/push"
+      ENV["RELAY_PUSH_RELAY_TOKEN"] = "relay-secret"
+      ENV["RELAY_PUSH_ENVIRONMENT"] = "sandbox"
+
+      config = described_class.from_env
+      expect(config.push_relay_url).to eq("https://push.example.test/push")
+      expect(config.push_relay_token).to eq("relay-secret")
+      expect(config.push_environment).to eq("sandbox")
+    end
+
+    it "rejects partial push relay configuration without exposing the token" do
+      ENV["RELAY_PUSH_RELAY_URL"] = "https://push.example.test/push"
+      expect { described_class.from_env }
+        .to raise_error(ArgumentError, /RELAY_PUSH_RELAY_URL and RELAY_PUSH_RELAY_TOKEN/)
+
+      ENV.delete("RELAY_PUSH_RELAY_URL")
+      ENV["RELAY_PUSH_RELAY_TOKEN"] = "do-not-log-this"
+      expect { described_class.from_env }
+        .to raise_error(ArgumentError, /RELAY_PUSH_RELAY_URL and RELAY_PUSH_RELAY_TOKEN/)
+      expect { described_class.from_env }.to raise_error do |error|
+        expect(error.message).not_to include("do-not-log-this")
+      end
+    end
+
+    it "rejects blank relay tokens and invalid relay URLs" do
+      invalid_urls = [
+        "http://push.example.test/push",
+        "https:///push",
+        "https://push.example.test/not-push",
+        "https://push.example.test/push?debug=1",
+        "https://push.example.test/push#fragment",
+        "not a url",
+        "https://user@push.example.test/push"
+      ]
+
+      invalid_urls.each do |url|
+        ENV["RELAY_PUSH_RELAY_URL"] = url
+        ENV["RELAY_PUSH_RELAY_TOKEN"] = "relay-secret"
+        expect { described_class.from_env }.to raise_error(ArgumentError, /RELAY_PUSH_RELAY_URL/)
+      end
+
+      ENV["RELAY_PUSH_RELAY_URL"] = "https://push.example.test/push"
+      ENV["RELAY_PUSH_RELAY_TOKEN"] = "   "
+      expect { described_class.from_env }.to raise_error(ArgumentError, /RELAY_PUSH_RELAY_TOKEN/)
+    end
+
+    it "rejects unsupported push environments even when push is disabled" do
+      ENV["RELAY_PUSH_ENVIRONMENT"] = "development"
+      expect { described_class.from_env }
+        .to raise_error(ArgumentError, /RELAY_PUSH_ENVIRONMENT must be production or sandbox/)
     end
   end
 

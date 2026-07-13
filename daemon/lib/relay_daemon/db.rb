@@ -55,6 +55,18 @@ module RelayDaemon
       conn
     end
 
+    # Closes and forgets only the calling thread's handle. Worker threads use
+    # this during shutdown so a dead thread never leaves an open SQLite handle.
+    sig { returns(T::Boolean) }
+    def close_current_connection
+      conn = Thread.current[@thread_key]
+      return false if conn.nil?
+
+      Thread.current[@thread_key] = nil
+      conn.close
+      true
+    end
+
     private
 
     sig { returns(SQLite3::Database) }
