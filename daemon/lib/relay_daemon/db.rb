@@ -104,7 +104,10 @@ module RelayDaemon
           "SELECT version FROM schema_migrations WHERE version = ?", version
         )
 
-        conn.execute_batch(File.read(file))
+        # Migration files are UTF-8; read them as such regardless of the
+        # process locale (POSIX locales default external encoding to
+        # US-ASCII, which raises on non-ASCII bytes).
+        conn.execute_batch(File.read(file, encoding: Encoding::UTF_8))
         conn.execute(
           "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
           [version, Time.now.utc.iso8601]

@@ -105,6 +105,24 @@ RSpec.describe RelayDaemon::Db do
     end
   end
 
+  describe "locale independence" do
+    it "migrates under a US-ASCII default external encoding" do
+      # POSIX/C locales (launchd, minimal CI containers) make Ruby default
+      # File.read to US-ASCII; migrations contain UTF-8 bytes and must still
+      # apply.
+      original = Encoding.default_external
+      verbose = $VERBOSE
+      begin
+        $VERBOSE = nil
+        Encoding.default_external = Encoding::US_ASCII
+        expect { described_class.new(db_path).connection.close }.not_to raise_error
+      ensure
+        Encoding.default_external = original
+        $VERBOSE = verbose
+      end
+    end
+  end
+
   describe "idempotency" do
     it "does not re-apply migrations on second open" do
       migration_count = Dir.glob(File.join(RelayDaemon::Db::MIGRATIONS_DIR, "*.sql")).size
