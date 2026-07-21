@@ -70,6 +70,41 @@ RSpec.describe RelayDaemon::SessionRunner do
     ).join
   end
 
+  it "adds streaming flags only to opted-in Claude commands without an output format" do
+    base = ["/opt/homebrew/bin/claude", "-p", "hello"]
+    expect(described_class.enable_claude_streaming(base, enabled: true)).to eq(
+      base + ["--output-format", "stream-json", "--verbose", "--include-partial-messages"]
+    )
+    expect(described_class.enable_claude_streaming(base, enabled: false)).to eq(base)
+    expect(described_class.enable_claude_streaming(["custom-agent"], enabled: true)).to eq(["custom-agent"])
+    expect(
+      described_class.enable_claude_streaming(base + ["--output-format=stream-json"], enabled: true)
+    ).to eq(base + ["--output-format=stream-json"])
+    expect(
+      described_class.enable_claude_streaming(base + ["--output-format", "json"], enabled: true)
+    ).to eq(base + ["--output-format", "json"])
+  end
+
+  def run_agent_output(output, content: "stream", run_id: "stream-run", stream_json: false, stderr: nil)
+    script_dir = Dir.mktmpdir
+    script = File.join(script_dir, "agent.rb")
+    script_body = "STDOUT.write(#{output.inspect})"
+    script_body += "; STDERR.write(#{stderr.inspect})" if stderr
+    File.write(script, script_body)
+    argv = ["ruby", script]
+    argv += ["--output-format", "stream-json"] if stream_json
+    described_class.run_async(
+      session_id: session["id"],
+      content: content,
+      worktree_path: worktree_path,
+      sessions_log_dir: sessions_log_dir,
+      agent_command: argv,
+      db_path: db_path,
+      event_bus: event_bus,
+      run_id: run_id
+    ).join
+  end
+
   it "uses --session-id for the first message and --resume for the second" do
     run_message("hello")
     run_message("again")
@@ -101,6 +136,171 @@ RSpec.describe RelayDaemon::SessionRunner do
     agent_events = events.select { |event| event["type"] == "agent.event" }
     expect(agent_events.map { |event| event["payload"]["sessionId"] }.uniq).to eq([session["id"]])
     expect(agent_events.map { |event| event["payload"]["line"] }).to include("prompt=log me")
+  end
+
+  it "publishes cumulative top-level previews and persists the terminal result" do
+    events = []
+    event_bus.subscribe { |event| events << event }
+    output = [
+      { "type" => "system", "subtype" => "init" },
+      {
+        "type" => "stream_event",
+        "event" => {
+          "type" => "content_block_delta",
+          "delta" => { "type" => "text_delta", "text" => "Hello" }
+        }
+      },
+      {
+        "type" => "stream_event",
+        "parent_tool_use_id" => "subagent-1",
+        "event" => {
+          "type" => "content_block_delta",
+          "delta" => { "type" => "text_delta", "text" => " hidden" }
+        }
+      },
+      {
+        "type" => "stream_event",
+        "event" => {
+          "type" => "content_block_delta",
+          "delta" => { "type" => "thinking_delta", "thinking" => "secret" }
+        }
+      },
+      {
+        "type" => "stream_event",
+        "event" => {
+          "type" => "content_block_delta",
+          "delta" => { "type" => "input_json_delta", "partial_json" => "{}" }
+        }
+      },
+      "{malformed json",
+      {
+        "type" => "stream_event",
+        "event" => {
+          "type" => "content_block_delta",
+          "delta" => { "type" => "text_delta", "text" => " world" }
+        }
+      },
+      {
+        "type" => "assistant",
+        "message" => {
+          "content" => [
+            { "type" => "thinking", "thinking" => "secret" },
+            { "type" => "text", "text" => "First complete answer" },
+            { "type" => "tool_use", "input" => {} }
+          ]
+        }
+      },
+      {
+        "type" => "assistant",
+        "message" => { "content" => [{ "type" => "text", "text" => "Last complete answer" }] }
+      },
+      { "type" => "result", "result" => "Canonical result" },
+      { "type" => "diagnostic", "message" => "ignored as protocol output" }
+    ].map { |line| line.is_a?(String) ? line : JSON.generate(line) }.join("\n") + "\n"
+
+    run_agent_output(output, stream_json: true)
+
+    agent_events = events.select { |event| event["type"] == "agent.event" }
+    updates = events.select { |event| event["type"] == "assistant.updated" }
+    expect(agent_events.map { |event| event["payload"]["line"] }).to eq([
+      "{malformed json",
+      '{"type":"diagnostic","message":"ignored as protocol output"}'
+    ])
+    expect(updates.map { |event| event["payload"] }).to eq([
+      { "sessionId" => session["id"], "agentRunId" => "stream-run", "sequence" => 0, "content" => "Hello" },
+      { "sessionId" => session["id"], "agentRunId" => "stream-run", "sequence" => 1, "content" => "Hello world" }
+    ])
+    expect(events.map { |event| event["type"] }).to eq([
+      "assistant.updated", "agent.event", "assistant.updated", "agent.event", "message.created", "session.updated"
+    ])
+
+    message = message_store.list_for_session(session["id"]).last
+    expect(message).to include(
+      "role" => "assistant", "content" => "Canonical result", "agentRunId" => "stream-run"
+    )
+    expect(events[-2]).to eq(
+      "type" => "message.created",
+      "payload" => { "sessionId" => session["id"], "message" => message }
+    )
+    log = Dir.glob(File.join(sessions_log_dir, session["id"], "runs", "*.log" )).first
+    expect(File.read(log)).to include("{malformed json", '"type":"diagnostic"')
+  end
+
+  it "persists semantic assistant content when no deltas are available" do
+    events = []
+    event_bus.subscribe { |event| events << event }
+    output = JSON.generate(
+      "type" => "assistant",
+      "content" => [
+        { "type" => "text", "text" => "Final answer" },
+        { "type" => "tool_use", "name" => "ignored" }
+      ]
+    ) + "\n"
+
+    run_agent_output(output, content: "final", run_id: "final-run", stream_json: true)
+
+    message = message_store.list_for_session(session["id"]).last
+    expect(message["content"]).to eq("Final answer")
+    expect(events.map { |event| event["type"] }).to eq(["message.created", "session.updated"])
+    expect(events.first["payload"]["message"]).to eq(message)
+  end
+
+  it "uses a semantic result as the final assistant fallback" do
+    events = []
+    event_bus.subscribe { |event| events << event }
+    run_agent_output(
+      JSON.generate("type" => "result", "result" => "Result text") + "\n",
+      content: "result",
+      run_id: "result-run",
+      stream_json: true
+    )
+
+    message = message_store.list_for_session(session["id"]).last
+    expect(message["content"]).to eq("Result text")
+    expect(events.map { |event| event["type"] }).to eq(["message.created", "session.updated"])
+  end
+
+  it "keeps JSON-looking output verbatim for commands without stream-json" do
+    output = "{\"answer\":42}\n[\"one\",2]\n"
+    events = []
+    event_bus.subscribe { |event| events << event }
+
+    run_agent_output(output, content: "plain json", run_id: "plain-json-run")
+
+    expect(message_store.list_for_session(session["id"]).last["content"])
+      .to eq("{\"answer\":42}\n[\"one\",2]")
+    expect(events.select { |event| event["type"] == "agent.event" }
+      .map { |event| event["payload"]["line"] }).to eq(["{\"answer\":42}", "[\"one\",2]"])
+  end
+
+  it "keeps stream protocol stdout out of diagnostics while publishing stderr diagnostics" do
+    events = []
+    event_bus.subscribe { |event| events << event }
+    output = JSON.generate(
+      "type" => "stream_event",
+      "event" => {
+        "type" => "content_block_delta",
+        "delta" => { "type" => "text_delta", "text" => "visible" }
+      }
+    ) + "\n"
+
+    run_agent_output(output, run_id: "stderr-run", stream_json: true, stderr: "diagnostic\n")
+
+    expect(events.select { |event| event["type"] == "agent.event" }
+      .map { |event| event["payload"]["line"] }).to eq(["diagnostic"])
+    expect(message_store.list_for_session(session["id"]).last["content"]).to eq("visible")
+  end
+
+  it "uses malformed stream output as a visible plain fallback and retains the raw log" do
+    events = []
+    event_bus.subscribe { |event| events << event }
+    run_agent_output("{not valid stream json\n", content: "bad stream", run_id: "bad-stream", stream_json: true)
+
+    expect(message_store.list_for_session(session["id"]).last["content"]).to eq("{not valid stream json")
+    expect(events.select { |event| event["type"] == "agent.event" }
+      .map { |event| event["payload"]["line"] }).to eq(["{not valid stream json"])
+    log = Dir.glob(File.join(sessions_log_dir, session["id"], "runs", "*.log" )).first
+    expect(File.read(log)).to include("{not valid stream json")
   end
 
   it "keeps known Claude auth advisories out of live output and assistant messages" do

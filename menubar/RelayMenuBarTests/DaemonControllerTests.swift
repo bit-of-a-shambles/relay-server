@@ -38,6 +38,51 @@ func XCTAssertThrowsErrorAsync(
 // MARK: -
 
 final class DaemonControllerTests: XCTestCase {
+    func testDaemonLaunchConfigKeepsLegacyCompatibleClaudeDefault() {
+        XCTAssertEqual(
+            DaemonLaunchConfig().agentCommandTemplate,
+            "claude -p {prompt} --permission-mode acceptEdits"
+        )
+    }
+
+    func testDaemonLaunchConfigPreservesCustomClaudeCommand() {
+        let suiteName = "RelayMenuBarTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let customCommand = "claude -p {prompt} --permission-mode acceptEdits "
+        defaults.set(customCommand, forKey: "daemon.agentCommandTemplate")
+
+        let config = DaemonLaunchConfig(defaults: defaults)
+
+        XCTAssertEqual(config.agentCommandTemplate, customCommand)
+        XCTAssertEqual(defaults.string(forKey: "daemon.agentCommandTemplate"), customCommand)
+    }
+
+    func testDefaultAgentCommandAndStreamingCapabilityArePassedToDaemonEnvironment() {
+        let environment = DaemonLaunchConfig().processEnvironment(
+            inherited: [:],
+            fallbackBindHost: "127.0.0.1"
+        )
+
+        XCTAssertEqual(
+            environment["RELAY_AGENT_COMMAND"],
+            "claude -p {prompt} --permission-mode acceptEdits"
+        )
+        XCTAssertEqual(environment["RELAY_CLAUDE_STREAMING"], "1")
+    }
+
+    func testCustomAgentCommandDoesNotEnableClaudeStreamingCapability() {
+        let environment = DaemonLaunchConfig(
+            agentCommandTemplate: "custom-agent {prompt}"
+        ).processEnvironment(
+            inherited: ["RELAY_CLAUDE_STREAMING": "1"],
+            fallbackBindHost: "127.0.0.1"
+        )
+
+        XCTAssertEqual(environment["RELAY_AGENT_COMMAND"], "custom-agent {prompt}")
+        XCTAssertNil(environment["RELAY_CLAUDE_STREAMING"])
+    }
+
     func testShellEscapeHandlesSingleQuotes() {
         let value = "/tmp/it'works"
         let escaped = DaemonController.shellEscape(value)

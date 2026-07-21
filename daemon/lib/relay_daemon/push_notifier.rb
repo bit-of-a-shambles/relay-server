@@ -232,7 +232,7 @@ module RelayDaemon
           break
         end
 
-        timeout = [HTTP_TIMEOUT_SECONDS.to_f, remaining].min
+        timeout = [HTTP_TIMEOUT_SECONDS.to_f, @delivery_budget_seconds.to_f, remaining].min
         deliver(uri, relay_token, category, device.fetch("deviceToken"), timeout)
       end
     rescue StandardError => e

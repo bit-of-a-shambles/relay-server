@@ -81,6 +81,11 @@ struct DaemonLaunchConfig: Equatable {
         environment["RELAY_DAEMON_HOST"] = bindHostOverride ?? fallbackBindHost
         environment["RELAY_DAEMON_PORT"] = String(port)
         environment["RELAY_AGENT_COMMAND"] = agentCommandTemplate
+        if agentCommandTemplate == Self.defaultAgentCommandTemplate {
+            environment["RELAY_CLAUDE_STREAMING"] = "1"
+        } else {
+            environment.removeValue(forKey: "RELAY_CLAUDE_STREAMING")
+        }
         environment["RELAY_ROUTER_BASE_URL"] = routerBaseURL
         environment["ANTHROPIC_API_KEY"] = anthropicAPIKey
         if let key = Self.normalized(openRouterAPIKey) {

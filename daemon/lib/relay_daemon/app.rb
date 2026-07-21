@@ -613,6 +613,9 @@ module RelayDaemon
         publish_session_updated(T.must(session_store.find(session["id"])))
 
         agent_argv = RelayDaemon::SessionRunner.build_argv(agent_command, content, session_id: session["id"], resume: resume)
+        agent_argv = RelayDaemon::SessionRunner.enable_claude_streaming(
+          agent_argv, enabled: settings.relay_config.claude_streaming
+        )
         agent_argv += ["--model", model_override] if model_override
 
         RelayDaemon::SessionRunner.run_async(
@@ -730,6 +733,9 @@ module RelayDaemon
 
             agent_argv = RelayDaemon::SessionRunner.build_argv(
               agent_command, retry_content, session_id: session["id"], resume: true
+            )
+            agent_argv = RelayDaemon::SessionRunner.enable_claude_streaming(
+              agent_argv, enabled: settings.relay_config.claude_streaming
             )
 
             RelayDaemon::SessionRunner.run_async(
