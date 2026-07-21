@@ -45,18 +45,171 @@ final class DaemonControllerTests: XCTestCase {
     }
 
     func testDaemonCommandUsesEscapedRepoPathAndExpectedShape() {
-        let command = DaemonController.daemonCommand(
-            repoRootPath: "/Users/test/relay",
-            host: "100.66.254.122"
-        )
+        let command = DaemonController.daemonCommand(repoRootPath: "/Users/test/relay")
 
         XCTAssertTrue(command.contains("cd '/Users/test/relay'/daemon"))
-        XCTAssertTrue(command.contains("RELAY_DAEMON_HOST='100.66.254.122'"))
-        XCTAssertTrue(command.contains("RELAY_DAEMON_PORT='17777'"))
         XCTAssertTrue(command.contains("bundle exec ruby bin/daemon"))
-        XCTAssertTrue(command.contains("RELAY_AGENT_COMMAND='claude -p {prompt} --permission-mode acceptEdits'"))
-        XCTAssertTrue(command.contains("ANTHROPIC_BASE_URL='http://127.0.0.1:7778/api'"))
+        XCTAssertFalse(command.contains("RELAY_DAEMON_HOST"))
+        XCTAssertFalse(command.contains("ANTHROPIC_API_KEY"))
         XCTAssertFalse(command.contains("rackup"))
+    }
+
+    func testResolveDaemonLaunchPrefersEnvironmentOverride() {
+        let fakeOptPath = NSTemporaryDirectory() + "relay-opt-\(UUID().uuidString)/relay-daemon"
+        var checked: [String] = []
+
+        let launch = DaemonController.resolveDaemonLaunch(
+            env: ["RELAY_DAEMON_BIN": fakeOptPath],
+            exists: { path in
+                checked.append(path)
+                return path == fakeOptPath
+            }
+        )
+
+        XCTAssertEqual(launch, .direct(executablePath: fakeOptPath))
+        XCTAssertEqual(checked, [fakeOptPath])
+    }
+
+    func testResolveDaemonLaunchPicksARealTemporaryFakeDaemon() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("relay-opt-\(UUID().uuidString)", isDirectory: true)
+        let fakePath = directory.appendingPathComponent("relay-daemon")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data("#!/bin/sh\nexit 0\n".utf8).write(to: fakePath)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakePath.path)
+
+        let launch = DaemonController.resolveDaemonLaunch(
+            env: ["RELAY_DAEMON_BIN": fakePath.path],
+            exists: { FileManager.default.fileExists(atPath: $0) }
+        )
+
+        XCTAssertEqual(launch, .direct(executablePath: fakePath.path))
+    }
+
+    func testResolveDaemonLaunchUsesHomebrewPathsInOrder() {
+        var checked: [String] = []
+
+        let launch = DaemonController.resolveDaemonLaunch(
+            env: [:],
+            exists: { path in
+                checked.append(path)
+                return path == "/usr/local/opt/relay/bin/relay-daemon"
+            }
+        )
+
+        XCTAssertEqual(launch, .direct(executablePath: "/usr/local/opt/relay/bin/relay-daemon"))
+        XCTAssertEqual(
+            checked,
+            [
+                "/opt/homebrew/opt/relay/bin/relay-daemon",
+                "/usr/local/opt/relay/bin/relay-daemon"
+            ]
+        )
+    }
+
+    func testResolveDaemonLaunchFallsBackToDevCheckoutShell() {
+        let launch = DaemonController.resolveDaemonLaunch(
+            env: ["RELAY_REPO_ROOT": "/Users/test/relay", "PWD": "/"],
+            exists: { _ in false }
+        )
+
+        guard case let .shell(command) = launch else {
+            return XCTFail("missing dev checkout shell fallback")
+        }
+        XCTAssertEqual(command, "cd '/'/daemon && bundle exec ruby bin/daemon")
+    }
+
+    func testDaemonLaunchConfigRoundTripsThroughSuiteDefaults() {
+        let suiteName = "RelayMenuBarTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let config = DaemonLaunchConfig(
+            bindHostOverride: " 100.64.0.12 ",
+            port: 18_888,
+            agentCommandTemplate: "agent --prompt {prompt}",
+            routerBaseURL: "http://127.0.0.1:8/api",
+            anthropicAPIKey: "configured-key"
+        )
+        config.save(to: defaults)
+
+        XCTAssertEqual(DaemonLaunchConfig(defaults: defaults), config)
+    }
+
+    func testDaemonLaunchConfigBuildsEnvironmentFromConfigAndInheritedValues() {
+        let config = DaemonLaunchConfig(
+            bindHostOverride: "100.64.0.12",
+            port: 18_888,
+            agentCommandTemplate: "agent --prompt {prompt}",
+            routerBaseURL: "http://127.0.0.1:8/api",
+            anthropicAPIKey: "relay-dummy"
+        )
+
+        let environment = config.processEnvironment(
+            inherited: ["OPENROUTER_API_KEY": "preserve-me"],
+            fallbackBindHost: "127.0.0.1"
+        )
+
+        XCTAssertEqual(environment["RELAY_DAEMON_HOST"], "100.64.0.12")
+        XCTAssertEqual(environment["RELAY_DAEMON_PORT"], "18888")
+        XCTAssertEqual(environment["RELAY_AGENT_COMMAND"], "agent --prompt {prompt}")
+        XCTAssertEqual(environment["RELAY_ROUTER_BASE_URL"], "http://127.0.0.1:8/api")
+        XCTAssertNil(environment["ANTHROPIC_BASE_URL"])
+        XCTAssertEqual(environment["ANTHROPIC_API_KEY"], "relay-dummy")
+        XCTAssertFalse(environment["ANTHROPIC_API_KEY", default: ""].isEmpty)
+        XCTAssertEqual(environment["OPENROUTER_API_KEY"], "preserve-me")
+    }
+
+    func testDaemonLaunchConfigPrefersStoredOpenRouterKey() {
+        let environment = DaemonLaunchConfig().processEnvironment(
+            inherited: ["OPENROUTER_API_KEY": "stale-environment-key"],
+            fallbackBindHost: "127.0.0.1",
+            openRouterAPIKey: " stored-key "
+        )
+
+        XCTAssertEqual(environment["OPENROUTER_API_KEY"], "stored-key")
+    }
+
+    func testDaemonLaunchConfigIgnoresBlankStoredOpenRouterKey() {
+        let environment = DaemonLaunchConfig().processEnvironment(
+            inherited: ["OPENROUTER_API_KEY": "environment-key"],
+            fallbackBindHost: "127.0.0.1",
+            openRouterAPIKey: "   "
+        )
+
+        XCTAssertEqual(environment["OPENROUTER_API_KEY"], "environment-key")
+    }
+
+    func testProcessLaunchSpecUsesDirectExecutableWithoutShell() {
+        let environment = ["RELAY_ROUTER_BASE_URL": "http://127.0.0.1:7778/api"]
+        let spec = DaemonController.processLaunchSpec(
+            for: .direct(executablePath: "/tmp/relay-daemon"),
+            environment: environment
+        )
+
+        XCTAssertEqual(spec.executablePath, "/tmp/relay-daemon")
+        XCTAssertEqual(spec.arguments, [])
+        XCTAssertEqual(spec.environment, environment)
+    }
+
+    func testProcessLaunchSpecUsesZshOnlyForDevShellFallback() {
+        let environment = ["RELAY_ROUTER_BASE_URL": "http://127.0.0.1:7778/api"]
+        let spec = DaemonController.processLaunchSpec(
+            for: .shell(command: "cd '/tmp/relay'/daemon && bundle exec ruby bin/daemon"),
+            environment: environment
+        )
+
+        XCTAssertEqual(spec.executablePath, "/bin/zsh")
+        XCTAssertEqual(spec.arguments, ["-lc", "cd '/tmp/relay'/daemon && bundle exec ruby bin/daemon"])
+        XCTAssertEqual(spec.environment, environment)
+    }
+
+    func testLogsFolderPathUsesRunsDirectory() {
+        XCTAssertEqual(
+            DaemonController.logsFolderPath(homeDirectory: "/tmp/relay-home"),
+            "/tmp/relay-home/.relay/runs"
+        )
     }
 
     func testPreferredBindHostFallsBackToLoopbackWhenEnvMissing() {

@@ -6,7 +6,7 @@ Thin macOS status-item wrapper for Relay.
 
 - Start/stop the local Relay daemon
 - Fetch and display one-time pairing code
-- Open task logs directory (`~/.relay/tasks`)
+- Open run logs directory (`~/.relay/runs`)
 
 ## Build and run
 
