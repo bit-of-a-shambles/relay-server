@@ -31,13 +31,13 @@ RSpec.describe RelayDaemon::Config do
       expect(described_class.from_env.router_command).to eq(["npm", "run", "start"])
     end
 
-    it "enables Claude streaming only when the menubar capability is set" do
-      expect(described_class.from_env.claude_streaming).to be(false)
+    it "enables Claude streaming by default for legacy launch environments" do
+      expect(described_class.from_env.claude_streaming).to be(true)
 
       ENV["RELAY_CLAUDE_STREAMING"] = "1"
       expect(described_class.from_env.claude_streaming).to be(true)
 
-      ENV["RELAY_CLAUDE_STREAMING"] = "true"
+      ENV["RELAY_CLAUDE_STREAMING"] = "0"
       expect(described_class.from_env.claude_streaming).to be(false)
     end
 

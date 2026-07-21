@@ -48,7 +48,7 @@ module RelayDaemon
         worktrees_dir: T.must(ENV.fetch("RELAY_WORKTREES_DIR", File.expand_path("~/.relay/worktrees"))),
         agent_log_dir: T.must(ENV.fetch("RELAY_AGENT_LOG_DIR", File.expand_path("~/.relay/runs"))),
         agent_command: ENV["RELAY_AGENT_COMMAND"],
-        claude_streaming: ENV["RELAY_CLAUDE_STREAMING"] == "1",
+        claude_streaming: ENV.fetch("RELAY_CLAUDE_STREAMING", "1") != "0",
         router_base_url: T.must(ENV.fetch("RELAY_ROUTER_BASE_URL", "http://127.0.0.1:7778/api")),
         routing_config_path: ENV["RELAY_ROUTING_CONFIG"],
         router_dir: T.must(ENV.fetch("RELAY_ROUTER_DIR", DEFAULT_ROUTER_DIR)),
