@@ -27,7 +27,8 @@ RSpec.describe RelayDaemon::SessionStore do
         "repoId" => repo["id"],
         "branch" => "relay/session/session-1",
         "status" => "active",
-        "lastMessageAt" => nil
+        "lastMessageAt" => nil,
+        "title" => nil
       )
       expect(session["baseCommit"]).to match(/\A[0-9a-f]{40}\z/)
       expect(Dir.exist?(File.join(worktrees_dir, "session-1"))).to be true
@@ -36,6 +37,15 @@ RSpec.describe RelayDaemon::SessionStore do
 
       rows = db.connection.get_first_value("SELECT COUNT(*) FROM chat_sessions")
       expect(rows).to eq(1)
+    end
+
+    it "gives two sessions for one repo distinct branches and worktrees" do
+      first = store.create(repo: repo, worktrees_dir: worktrees_dir, id: "first")
+      second = store.create(repo: repo, worktrees_dir: worktrees_dir, id: "second")
+
+      expect(first["branch"]).not_to eq(second["branch"])
+      expect(File.join(worktrees_dir, first["id"])).to satisfy { |path| Dir.exist?(path) }
+      expect(File.join(worktrees_dir, second["id"])).to satisfy { |path| Dir.exist?(path) }
     end
 
     it "returns nil from find for an unknown session" do
@@ -80,6 +90,40 @@ RSpec.describe RelayDaemon::SessionStore do
       store.discard(session["id"])
 
       expect(store.active_for_repo(repo["id"])).to be_nil
+    end
+  end
+
+  describe "#list_for_repo and #most_recent_active_for_repo" do
+    it "lists active sessions newest by message activity by default" do
+      older = store.create(repo: repo, worktrees_dir: worktrees_dir, id: "older")
+      newer = store.create(repo: repo, worktrees_dir: worktrees_dir, id: "newer")
+      db.connection.execute("UPDATE chat_sessions SET last_message_at = ? WHERE id = ?", ["2026-01-01T00:00:00Z", older["id"]])
+      db.connection.execute("UPDATE chat_sessions SET last_message_at = ? WHERE id = ?", ["2026-01-02T00:00:00Z", newer["id"]])
+
+      expect(store.list_for_repo(repo["id"]).map { |session| session["id"] }).to eq(%w[newer older])
+      expect(store.most_recent_active_for_repo(repo["id"])["id"]).to eq("newer")
+    end
+
+    it "can include discarded sessions" do
+      session = store.create(repo: repo, worktrees_dir: worktrees_dir, id: "discarded-list")
+      store.discard(session["id"])
+
+      expect(store.list_for_repo(repo["id"], active: false).map { |item| item["id"] })
+        .to include(session["id"])
+      expect(store.list_for_repo(repo["id"]).map { |item| item["id"] })
+        .not_to include(session["id"])
+    end
+
+    it "returns nil when a repo has no active sessions" do
+      expect(store.most_recent_active_for_repo(repo["id"])).to be_nil
+    end
+
+    it "renames a session after trimming and rejects blank or oversized titles" do
+      session = store.create(repo: repo, worktrees_dir: worktrees_dir, id: "rename-me")
+
+      expect(store.rename(session["id"], "  My session  ")["title"]).to eq("My session")
+      expect { store.rename(session["id"], " \t ") }.to raise_error(ArgumentError, "title is required")
+      expect { store.rename(session["id"], "x" * 201) }.to raise_error(ArgumentError, "title is too long")
     end
   end
 end
@@ -152,6 +196,22 @@ RSpec.describe RelayDaemon::MessageStore do
       expect(message_store.list_for_session(session["id"]).map { |message| message["id"] })
         .to eq(%w[message-1 message-2])
       expect(session_store.find(session["id"])["lastMessageAt"]).not_to be_nil
+      expect(session_store.find(session["id"])["title"]).to eq("hello")
+    end
+
+    it "assigns the first nonblank user message as a bounded title only once" do
+      message_store.append(session_id: session["id"], role: "assistant", content: "answer")
+      long_content = "  #{"x" * 205}  "
+      message_store.append(session_id: session["id"], role: "user", content: long_content)
+      message_store.append(session_id: session["id"], role: "user", content: "second")
+
+      expect(session_store.find(session["id"])["title"]).to eq("x" * 200)
+    end
+
+    it "does not assign a title from a blank user message" do
+      message_store.append(session_id: session["id"], role: "user", content: "   ")
+
+      expect(session_store.find(session["id"])["title"]).to be_nil
     end
 
     it "returns an empty list for an unknown session" do
