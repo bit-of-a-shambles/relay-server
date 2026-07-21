@@ -52,10 +52,10 @@ describe("Anthropic to OpenAI translation", () => {
       ]
     };
 
-    const translated = toOpenAIRequest(request, { model: "moonshotai/kimi-k2" });
+    const translated = toOpenAIRequest(request, { model: "openai/gpt-5.5" });
 
     expect(translated).toMatchObject({
-      model: "moonshotai/kimi-k2",
+      model: "openai/gpt-5.5",
       max_tokens: 1024,
       stream: true,
       stream_options: { include_usage: true },
@@ -179,9 +179,9 @@ describe("Anthropic to OpenAI translation", () => {
       messages: [{ role: "user", content: "Say hello" }]
     };
 
-    expect(toOpenAIRequest(request, { model: "moonshotai/kimi-k2", maxCompletionTokens: 4096 }).max_tokens)
+    expect(toOpenAIRequest(request, { model: "openai/gpt-5.5", maxCompletionTokens: 4096 }).max_tokens)
       .toBe(4096);
-    expect(toOpenAIRequest(request, { model: "moonshotai/kimi-k2" }).max_tokens).toBe(64_000);
+    expect(toOpenAIRequest(request, { model: "openai/gpt-5.5" }).max_tokens).toBe(64_000);
   });
 
   it("maps tool choice any and tool result error content shapes", () => {
@@ -279,7 +279,7 @@ describe("OpenAI to Anthropic translation", () => {
   it("maps assistant text and function calls back to content blocks", () => {
     const response: OpenAIChatCompletionResponse = {
       id: "chatcmpl_1",
-      model: "moonshotai/kimi-k2",
+      model: "openai/gpt-5.5",
       choices: [
         {
           index: 0,
@@ -311,7 +311,7 @@ describe("OpenAI to Anthropic translation", () => {
       id: "msg_chatcmpl_1",
       type: "message",
       role: "assistant",
-      model: "moonshotai/kimi-k2",
+      model: "openai/gpt-5.5",
       stop_reason: "tool_use",
       stop_sequence: null,
       usage: {

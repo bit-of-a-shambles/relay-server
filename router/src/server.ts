@@ -61,7 +61,7 @@ export function defaultOptionsFromEnv(): RouterServerOptions {
     port: Number.parseInt(process.env.RELAY_ROUTER_PORT ?? "7778", 10),
     openRouterApiKey: process.env.OPENROUTER_API_KEY,
     openRouterBaseUrl: process.env.OPENROUTER_BASE_URL ?? "https://openrouter.ai/api/v1",
-    openRouterModel: process.env.OPENROUTER_MODEL ?? "moonshotai/kimi-k2",
+    openRouterModel: process.env.OPENROUTER_MODEL ?? "openai/gpt-5.5",
     maxCompletionTokens: Number.parseInt(process.env.RELAY_MAX_COMPLETION_TOKENS ?? "4096", 10),
     routingConfigLoader: createRoutingConfigLoader(process.env.RELAY_ROUTING_CONFIG),
     callLogSink: createCallLogSink({

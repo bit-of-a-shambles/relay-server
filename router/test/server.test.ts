@@ -79,7 +79,7 @@ describe("Relay router HTTP server", () => {
 
     const upstreamBody = JSON.parse(upstream.requests[0]?.body ?? "{}") as Record<string, unknown>;
     expect(upstreamBody).toMatchObject({
-      model: "moonshotai/kimi-k2",
+      model: "openai/gpt-5.5",
       max_tokens: 100,
       messages: [{ role: "user", content: "Say done" }],
       stream: false
@@ -142,7 +142,7 @@ describe("Relay router HTTP server", () => {
       response.end(
         JSON.stringify({
           id: "chatcmpl_escalated",
-          model: "anthropic/claude-sonnet-latest",
+          model: "openai/gpt-5.6-terra",
           choices: [
             { index: 0, finish_reason: "stop", message: { role: "assistant", content: "ok" } }
           ],
@@ -173,13 +173,13 @@ describe("Relay router HTTP server", () => {
 
     expect(escalatedResponse.status).toBe(200);
     expect(upstream.requests.map((request) => JSON.parse(request.body).model)).toEqual([
-      "anthropic/claude-sonnet-latest"
+      "openai/gpt-5.6-terra"
     ]);
     expect(sink.records).toHaveLength(1);
     expect(sink.records[0]).toMatchObject({
       sessionId: "session-escalated-1",
       requestedModel: "claude-sonnet-4-5",
-      routedModel: "anthropic/claude-sonnet-latest",
+      routedModel: "openai/gpt-5.6-terra",
       provider: "openrouter",
       tier: 2,
       escalationReason: "test_failure_retry"
@@ -201,7 +201,7 @@ describe("Relay router HTTP server", () => {
       response.end(
         JSON.stringify({
           id: "chatcmpl_retry",
-          model: "anthropic/claude-sonnet-latest",
+          model: "openai/gpt-5.6-terra",
           choices: [
             {
               index: 0,
@@ -243,14 +243,14 @@ describe("Relay router HTTP server", () => {
     });
 
     expect(upstream.requests.map((request) => JSON.parse(request.body).model)).toEqual([
-      "anthropic/claude-sonnet-latest",
-      "anthropic/claude-opus-latest"
+      "openai/gpt-5.6-terra",
+      "openai/gpt-5.6-sol"
     ]);
     expect(sink.records).toHaveLength(2);
     expect(sink.records[0]).toMatchObject({
       sessionId: null,
       requestedModel: "claude-sonnet-4-5",
-      routedModel: "anthropic/claude-sonnet-latest",
+      routedModel: "openai/gpt-5.6-terra",
       provider: "openrouter",
       tier: 2,
       escalationReason: null,
@@ -259,7 +259,7 @@ describe("Relay router HTTP server", () => {
     });
     expect(sink.records[1]).toMatchObject({
       requestedModel: "claude-sonnet-4-5",
-      routedModel: "anthropic/claude-opus-latest",
+      routedModel: "openai/gpt-5.6-sol",
       provider: "openrouter",
       tier: 3,
       escalationReason: "upstream_error_retry",
@@ -309,7 +309,7 @@ describe("Relay router HTTP server", () => {
       response.end(
         JSON.stringify({
           id: "chatcmpl_no_cost",
-          model: "anthropic/claude-opus-latest",
+          model: "openai/gpt-5.6-sol",
           choices: [
             {
               index: 0,
@@ -344,7 +344,7 @@ describe("Relay router HTTP server", () => {
     expect(upstream.requests).toHaveLength(1);
     expect(sink.records).toHaveLength(1);
     expect(sink.records[0]).toMatchObject({
-      routedModel: "anthropic/claude-opus-latest",
+      routedModel: "openai/gpt-5.6-sol",
       provider: "openrouter",
       costUsd: null,
       completionTokens: 0
@@ -541,7 +541,7 @@ describe("Relay router HTTP server", () => {
     expect(successSink.records).toHaveLength(1);
     expect(successSink.records[0]).toMatchObject({
       status: "success",
-      routedModel: "moonshotai/kimi-k2",
+      routedModel: "openai/gpt-5.5",
       provider: "openrouter"
     });
 
@@ -869,7 +869,7 @@ describe("Relay router HTTP server", () => {
         port: 7778,
       openRouterApiKey: undefined,
       openRouterBaseUrl: "https://openrouter.ai/api/v1",
-      openRouterModel: "moonshotai/kimi-k2",
+      openRouterModel: "openai/gpt-5.5",
       routingConfigLoader: expect.any(Object),
       callLogSink: undefined,
       referer: "relay.local",

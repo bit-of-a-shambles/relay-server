@@ -23,18 +23,19 @@ module RelayDaemon
     DEFAULT_BASE_CONFIG = T.let(
       {
         "tiers" => {
-          "0" => ["qwen/qwen3-coder-small"],
-          "1" => ["moonshotai/kimi-k2", "deepseek/deepseek-chat"],
-          "2" => ["anthropic/claude-sonnet-latest"],
-          "3" => ["anthropic/claude-opus-latest"]
+          "0" => ["deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-pro"],
+          "1" => ["openai/gpt-5.5", "x-ai/grok-4.5", "z-ai/glm-5.2"],
+          "2" => ["openai/gpt-5.6-terra", "openai/gpt-5.6-luna"],
+          "3" => ["openai/gpt-5.6-sol", "anthropic/claude-fable-5"]
         },
         "rules" => [
           { "when" => "requestedModel contains 'haiku'", "tier" => 0 },
+          { "when" => "requestedModel contains 'flash'", "tier" => 0 },
           { "when" => "promptTokens > 60000", "tier" => 2 },
           { "when" => "default", "tier" => 1 }
         ],
         "qualityDial" => { "default" => 5 },
-        "frontierModel" => "anthropic/claude-opus-latest",
+        "frontierModel" => "openai/gpt-5.6-sol",
         "providers" => {}
       }.freeze,
       T::Hash[String, T.untyped]
