@@ -4,11 +4,30 @@ import CoreImage.CIFilterBuiltins
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
-    private let daemon = DaemonController()
+    private let daemon: DaemonController
+    private let settingsWindowOpener: any SettingsWindowOpening
 
     private let startStopItem = NSMenuItem(title: "Start Relay Daemon", action: #selector(toggleDaemon), keyEquivalent: "s")
     private let pairItem = NSMenuItem(title: "Show Pairing Code", action: #selector(showPairingCode), keyEquivalent: "p")
-    private let logsItem = NSMenuItem(title: "Open Task Logs", action: #selector(openLogs), keyEquivalent: "l")
+    private let logsItem = NSMenuItem(title: "Open Run Logs", action: #selector(openLogs), keyEquivalent: "l")
+    private let settingsItem = NSMenuItem(title: "Settings...", action: #selector(openSettings), keyEquivalent: ",")
+
+    override convenience init() {
+        self.init(
+            daemon: DaemonController(),
+            settingsWindowOpener: SettingsWindowController()
+        )
+    }
+
+    convenience init(settingsWindowOpener: any SettingsWindowOpening) {
+        self.init(daemon: DaemonController(), settingsWindowOpener: settingsWindowOpener)
+    }
+
+    init(daemon: DaemonController, settingsWindowOpener: any SettingsWindowOpening) {
+        self.daemon = daemon
+        self.settingsWindowOpener = settingsWindowOpener
+        super.init()
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -20,19 +39,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             button.toolTip = "Relay"
         }
 
+        let menu = makeStatusMenu()
+        statusItem.menu = menu
+        refreshMenuState()
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(restartDaemonAfterSettingsChange),
+            name: .relaySettingsDidChange,
+            object: nil
+        )
+    }
+
+    func makeStatusMenu() -> NSMenu {
         let menu = NSMenu()
         startStopItem.target = self
         pairItem.target = self
         logsItem.target = self
+        settingsItem.target = self
 
         menu.addItem(startStopItem)
         menu.addItem(pairItem)
         menu.addItem(logsItem)
+        menu.addItem(settingsItem)
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit", action: #selector(quit), keyEquivalent: "q").target = self
-
-        statusItem.menu = menu
-        refreshMenuState()
+        return menu
     }
 
     @objc private func toggleDaemon() {
@@ -76,9 +107,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         daemon.openLogsFolder()
     }
 
+    @objc func openSettings() {
+        settingsWindowOpener.showSettings()
+    }
+
     @objc private func quit() {
         daemon.stop()
         NSApp.terminate(nil)
+    }
+
+    @objc private func restartDaemonAfterSettingsChange() {
+        daemon.stop()
+        do {
+            try daemon.start()
+            refreshMenuState()
+        } catch {
+            refreshMenuState()
+            showError(error.localizedDescription)
+        }
     }
 
     private func refreshMenuState() {
