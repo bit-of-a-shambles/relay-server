@@ -2,7 +2,7 @@ name: menubar
 
 on:
   push:
-    branches: [main, "claude/**"]
+    branches: [master, "claude/**"]
     paths:
       - "menubar/**"
   pull_request:

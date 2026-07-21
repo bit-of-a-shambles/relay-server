@@ -1206,7 +1206,7 @@ checked automatically on every PR and push.
    `srb tc` + `rspec`), `menubar` job (macos-15 — Xcode 16 is needed to
    open xcodegen's objectVersion-77 projects — `brew install xcodegen`,
    test — path-gated to `menubar/**` to conserve macOS minutes).
-2. Triggers: PR + push to main. No secrets needed (tests are network-free).
+2. Triggers: PR + push to master. No secrets needed (tests are network-free).
 
 **Done when:** YAML is valid; CI runs green on this repo (user-checked).
 
