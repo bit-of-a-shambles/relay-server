@@ -132,6 +132,376 @@ RSpec.describe "Sessions API" do
     end
   end
 
+  describe "multi-thread session lifecycle" do
+    def post_repo_session(repo_id, body = {})
+      post "/repos/#{repo_id}/sessions", body.to_json,
+           { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+    end
+
+    def stale_lifecycle_response(session, method, path, body = "")
+      locked = Queue.new
+      release = Queue.new
+      snapshot = Queue.new
+      holder = Thread.new do
+        RelayDaemon::App.with_repo_lock(repo["id"]) do
+          locked << true
+          release.pop
+        end
+      end
+      locked.pop
+
+      seen = false
+      allow(session_store).to receive(:find).and_wrap_original do |original, id|
+        if id == session["id"] && !seen
+          seen = true
+          snapshot << true
+        end
+        original.call(id)
+      end
+      request = Thread.new do
+        Rack::MockRequest.new(RelayDaemon::App).public_send(
+          method, path, input: body, "CONTENT_TYPE" => "application/json",
+          "HTTP_AUTHORIZATION" => "Bearer #{token}"
+        )
+      end
+      snapshot.pop
+      session_store.discard(session["id"])
+      release << true
+      holder.join
+      request.join.value
+    end
+
+    it "requires auth for repo-scoped and individual session routes" do
+      get "/repos/#{repo["id"]}/sessions"
+      expect(last_response.status).to eq(401)
+
+      post_repo_session(repo["id"], {})
+      expect(last_response.status).to eq(201)
+      session_id = JSON.parse(last_response.body)["id"]
+
+      get "/sessions/#{session_id}"
+      expect(last_response.status).to eq(401)
+      patch "/sessions/#{session_id}", { title: "renamed" }.to_json,
+            { "CONTENT_TYPE" => "application/json" }
+      expect(last_response.status).to eq(401)
+    end
+
+    it "lists active sessions newest by activity and creates a fresh titled thread" do
+      post_repo_session(repo["id"], { title: " first thread " })
+      expect(last_response.status).to eq(201)
+      first = JSON.parse(last_response.body)
+      expect(first["title"]).to eq("first thread")
+
+      post_repo_session(repo["id"], { title: "second thread" })
+      second = JSON.parse(last_response.body)
+      expect(second["id"]).not_to eq(first["id"])
+
+      db.connection.execute("UPDATE chat_sessions SET last_message_at = ? WHERE id = ?",
+                            ["2026-07-15T12:00:00Z", first["id"]])
+      db.connection.execute("UPDATE chat_sessions SET last_message_at = ? WHERE id = ?",
+                            ["2026-07-15T11:00:00Z", second["id"]])
+
+      get "/repos/#{repo["id"]}/sessions", {}, auth_headers
+      expect(last_response.status).to eq(200)
+      expect(JSON.parse(last_response.body).map { |item| item["id"] }).to eq([first["id"], second["id"]])
+
+      post_repo_session(999_999)
+      expect(last_response.status).to eq(404)
+      get "/repos/not-an-id/sessions", {}, auth_headers
+      expect(last_response.status).to eq(422)
+    end
+
+    it "validates titles before creating or renaming a session" do
+      post_repo_session(repo["id"], { title: " " })
+      expect(last_response.status).to eq(422)
+      post_repo_session(repo["id"], { title: "x" * 201 })
+      expect(last_response.status).to eq(422)
+      post_repo_session(repo["id"], [])
+      expect(last_response.status).to eq(422)
+
+      session = create_session
+      patch "/sessions/#{session["id"]}", "not json",
+            { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+      expect(last_response.status).to eq(400)
+      patch "/sessions/#{session["id"]}", { title: "" }.to_json,
+            { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+      expect(last_response.status).to eq(422)
+      patch "/sessions/#{session["id"]}", { title: "renamed" }.to_json,
+            { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+      expect(last_response.status).to eq(200)
+      expect(JSON.parse(last_response.body)["title"]).to eq("renamed")
+    end
+
+    it "handles empty creation bodies and missing dependencies" do
+      post "/repos/#{repo["id"]}/sessions", "", auth_headers
+      expect(last_response.status).to eq(201)
+      session_id = JSON.parse(last_response.body)["id"]
+
+      get "/repos/999999/sessions", {}, auth_headers
+      expect(last_response.status).to eq(404)
+      post "/repos/not-an-id/sessions", "", auth_headers
+      expect(last_response.status).to eq(422)
+
+      RelayDaemon::App.set(:repo_store, nil)
+      get "/repos/#{repo["id"]}/sessions", {}, auth_headers
+      expect(last_response.status).to eq(503)
+      post "/repos/#{repo["id"]}/sessions", "", auth_headers
+      expect(last_response.status).to eq(503)
+      RelayDaemon::App.set(:repo_store, repo_store)
+
+      RelayDaemon::App.set(:session_store, nil)
+      get "/repos/#{repo["id"]}/sessions", {}, auth_headers
+      expect(last_response.status).to eq(503)
+      post "/repos/#{repo["id"]}/sessions", "", auth_headers
+      expect(last_response.status).to eq(503)
+      get "/sessions/#{session_id}", {}, auth_headers
+      expect(last_response.status).to eq(503)
+      patch "/sessions/#{session_id}", { title: "x" }.to_json,
+            { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+      expect(last_response.status).to eq(503)
+      RelayDaemon::App.set(:session_store, session_store)
+
+      get "/sessions/missing", {}, auth_headers
+      expect(last_response.status).to eq(404)
+      patch "/sessions/missing", { title: "x" }.to_json,
+            { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+      expect(last_response.status).to eq(404)
+
+      allow(session_store).to receive(:rename).and_return(nil)
+      patch "/sessions/#{session_id}", { title: "x" }.to_json,
+            { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+      expect(last_response.status).to eq(404)
+    end
+
+    it "opens individual sessions and resumes the most recently active legacy thread" do
+      post_repo_session(repo["id"])
+      first = JSON.parse(last_response.body)
+      post_repo_session(repo["id"])
+      second = JSON.parse(last_response.body)
+
+      db.connection.execute("UPDATE chat_sessions SET last_message_at = ? WHERE id = ?",
+                            ["2026-07-15T10:00:00Z", first["id"]])
+      db.connection.execute("UPDATE chat_sessions SET last_message_at = ? WHERE id = ?",
+                            ["2026-07-15T11:00:00Z", second["id"]])
+      post_session
+      expect(last_response.status).to eq(200)
+      expect(JSON.parse(last_response.body)["id"]).to eq(second["id"])
+
+      get "/sessions/#{first["id"]}", {}, auth_headers
+      expect(last_response.status).to eq(200)
+      expect(JSON.parse(last_response.body)["id"]).to eq(first["id"])
+      get "/sessions/missing", {}, auth_headers
+      expect(last_response.status).to eq(404)
+    end
+
+    it "re-reads active state inside the lock for rename, approve, and discard" do
+      post_repo_session(repo["id"])
+      rename_session = JSON.parse(last_response.body)
+      rename_response = stale_lifecycle_response(
+        rename_session, :patch, "/sessions/#{rename_session["id"]}", { title: "late rename" }.to_json
+      )
+      expect(rename_response.status).to eq(409)
+
+      post_repo_session(repo["id"])
+      approve_session = JSON.parse(last_response.body)
+      approve_response = stale_lifecycle_response(
+        approve_session, :post, "/sessions/#{approve_session["id"]}/approve"
+      )
+      expect(approve_response.status).to eq(409)
+      expect(JSON.parse(approve_response.body)["error"]).to eq("session is not active")
+
+      post_repo_session(repo["id"])
+      discard_session = JSON.parse(last_response.body)
+      discard_response = stale_lifecycle_response(
+        discard_session, :post, "/sessions/#{discard_session["id"]}/discard"
+      )
+      expect(discard_response.status).to eq(409)
+      expect(JSON.parse(discard_response.body)["error"]).to eq("already discarded")
+    end
+
+    it "returns not found when a session disappears during each locked re-read" do
+      post_repo_session(repo["id"])
+      message_session = JSON.parse(last_response.body)
+      allow(session_store).to receive(:find).and_return(message_session, nil)
+      response = post "/sessions/#{message_session["id"]}/messages", { content: "gone" }.to_json,
+                       { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+      expect(response.status).to eq(404)
+      allow(session_store).to receive(:find).and_call_original
+
+      post_repo_session(repo["id"])
+      rename_session = JSON.parse(last_response.body)
+      allow(session_store).to receive(:find).and_return(rename_session, nil)
+      response = patch "/sessions/#{rename_session["id"]}", { title: "gone" }.to_json,
+                       { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+      expect(response.status).to eq(404)
+      allow(session_store).to receive(:find).and_call_original
+
+      post_repo_session(repo["id"])
+      approve_session = JSON.parse(last_response.body)
+      allow(session_store).to receive(:find).and_return(approve_session, nil)
+      response = post "/sessions/#{approve_session["id"]}/approve", "", auth_headers
+      expect(response.status).to eq(404)
+      allow(session_store).to receive(:find).and_call_original
+
+      post_repo_session(repo["id"])
+      discard_session = JSON.parse(last_response.body)
+      allow(session_store).to receive(:find).and_return(discard_session, nil)
+      response = post "/sessions/#{discard_session["id"]}/discard", "", auth_headers
+      expect(response.status).to eq(404)
+    end
+
+    it "returns one legacy winner as 201 and the locked loser as 200 without a second event" do
+      events = []
+      RelayDaemon::App.settings.event_bus.subscribe { |event| events << event }
+      requests = 2.times.map do
+        Thread.new do
+          Rack::MockRequest.new(RelayDaemon::App).post(
+            "/sessions", input: { repoId: repo["id"] }.to_json,
+            "CONTENT_TYPE" => "application/json",
+            "HTTP_AUTHORIZATION" => "Bearer #{token}"
+          )
+        end
+      end
+      responses = requests.map(&:value)
+
+      expect(responses.map(&:status).sort).to eq([200, 201])
+      expect(events.count { |event| event["type"] == "session.updated" }).to eq(1)
+    end
+
+    it "keeps sibling lifecycle independent and publishes complete update events" do
+      events = []
+      RelayDaemon::App.settings.event_bus.subscribe { |event| events << event }
+      post_repo_session(repo["id"], { title: "keep" })
+      first = JSON.parse(last_response.body)
+      post_repo_session(repo["id"], { title: "discard me" })
+      second = JSON.parse(last_response.body)
+
+      patch "/sessions/#{first["id"]}", { title: "renamed" }.to_json,
+            { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+      expect(last_response.status).to eq(200)
+      payload = events.reverse.find { |event| event["type"] == "session.updated" }["payload"]
+      expect(payload).to include(
+        "sessionId" => first["id"], "repoId" => repo["id"], "title" => "renamed",
+        "status" => "active"
+      )
+
+      post "/sessions/#{first["id"]}/discard", "", auth_headers
+      expect(last_response.status).to eq(200)
+      expect(JSON.parse(last_response.body)["status"]).to eq("discarded")
+      expect(Dir.exist?(File.join(worktrees_dir, second["id"]))).to be true
+      expect(session_store.find(second["id"])["status"]).to eq("active")
+
+      ["messages", "test", "approve"].each do |action|
+        response = if action == "messages"
+                     post "/sessions/#{first["id"]}/messages", { content: "nope" }.to_json,
+                          { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+                   else
+                     post "/sessions/#{first["id"]}/#{action}", "", auth_headers
+                   end
+        expect(response.status).to eq(409)
+      end
+    end
+
+    it "keeps an accepted message busy before the runner thread starts" do
+      session = create_session
+      started = Queue.new
+      release = Queue.new
+      allow(RelayDaemon::SessionRunner).to receive(:run_async) do |**options|
+        started << options[:session_id]
+        release.pop
+        RelayDaemon::SessionRunner.release(options[:session_id])
+        Thread.new {}
+      end
+
+      request = Thread.new do
+        Rack::MockRequest.new(RelayDaemon::App).post(
+          "/sessions/#{session["id"]}/messages",
+          input: { content: "accepted" }.to_json,
+          "CONTENT_TYPE" => "application/json",
+          "HTTP_AUTHORIZATION" => "Bearer #{token}"
+        )
+      end
+      expect(started.pop).to eq(session["id"])
+
+      discard = Rack::MockRequest.new(RelayDaemon::App).post(
+        "/sessions/#{session["id"]}/discard",
+        "HTTP_AUTHORIZATION" => "Bearer #{token}"
+      )
+      expect(discard.status).to eq(409)
+      expect(Dir.exist?(File.join(worktrees_dir, session["id"]))).to be true
+
+      release << true
+      expect(request.join.value.status).to eq(202)
+    end
+
+    it "keeps a full test operation busy until its process and retry finish" do
+      gate = File.join(Dir.mktmpdir, "test-gate")
+      started_file = File.join(Dir.mktmpdir, "test-started")
+      File.mkfifo(gate)
+      script = File.join(Dir.mktmpdir, "blocking_test.rb")
+      File.write(script, "File.write(ARGV.fetch(0), 'started'); File.open(ARGV.fetch(1), 'r').read")
+      blocking_repo = repo_store.create(path: make_git_dir, test_command: "ruby #{script} #{started_file} #{gate}")
+      session = session_store.create(repo: blocking_repo, worktrees_dir: worktrees_dir)
+
+      request = Thread.new do
+        Rack::MockRequest.new(RelayDaemon::App).post(
+          "/sessions/#{session["id"]}/test",
+          input: "",
+          "CONTENT_TYPE" => "application/json",
+          "HTTP_AUTHORIZATION" => "Bearer #{token}"
+        )
+      end
+      Timeout.timeout(2) { Thread.pass until File.exist?(started_file) }
+
+      discard = Rack::MockRequest.new(RelayDaemon::App).post(
+        "/sessions/#{session["id"]}/discard",
+        "HTTP_AUTHORIZATION" => "Bearer #{token}"
+      )
+      expect(discard.status).to eq(409)
+      expect(Dir.exist?(File.join(worktrees_dir, session["id"]))).to be true
+
+      File.open(gate, "w") { |io| io.write("done") }
+      expect(request.join.value.status).to eq(200)
+      expect(RelayDaemon::SessionRunner.running?(session["id"])).to be false
+    end
+
+    it "serializes work for one repo while allowing the lock to be released" do
+      entered = Queue.new
+      second_started = Queue.new
+      release = Queue.new
+      finished = Queue.new
+
+      first = Thread.new do
+        RelayDaemon::App.with_repo_lock(repo["id"]) do
+          entered << true
+          release.pop
+        end
+        finished << :first
+      end
+      entered.pop
+
+      second = Thread.new do
+        second_started << true
+        RelayDaemon::App.with_repo_lock(repo["id"]) { finished << :second }
+      end
+      second_started.pop
+      expect(finished.empty?).to be true
+
+      release << true
+      first.join
+      second.join
+      expect([finished.pop, finished.pop]).to eq(%i[first second])
+    end
+
+    it "rejects invalid JSON and non-object bodies for repo-scoped creation" do
+      post "/repos/#{repo["id"]}/sessions", "not json",
+           { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+      expect(last_response.status).to eq(400)
+      post_repo_session(repo["id"], [])
+      expect(last_response.status).to eq(422)
+    end
+  end
+
   describe "session messages" do
     it "lists messages and posts a new user message that invokes the session runner" do
       session = create_session
@@ -152,6 +522,12 @@ RSpec.describe "Sessions API" do
       expect(messages.map { |message| message["role"] }).to eq(%w[user assistant])
       expect(messages.last["content"]).to include("mode=session-id", "prompt=hello")
       expect(events.map { |event| event["type"] }).to include("message.created", "agent.event")
+      updates = events.select { |event| event["type"] == "session.updated" }
+      expect(updates.length).to be >= 2
+      expect(updates.map { |event| event["payload"]["lastMessageAt"] }.all? { |value| !value.nil? }).to be true
+      expect(updates.last["payload"]).to include(
+        "sessionId" => session["id"], "repoId" => repo["id"], "status" => "active"
+      )
     end
 
     it "resumes the existing agent session on the second message" do
@@ -304,9 +680,12 @@ RSpec.describe "Sessions API" do
       expect(File.read(File.join(worktrees_dir, session["id"], "env_anthropic_base.txt")))
         .to end_with("/session/#{session["id"]}/escalated")
       expect(events.map { |event| event["type"] }).to include("message.created", "agent.event")
+      updates = events.select { |event| event["type"] == "session.updated" }
+      expect(updates.length).to be >= 2
+      expect(updates.map { |event| event["payload"]["title"] }.uniq.length).to eq(1)
+      expect(updates.map { |event| event["payload"]["lastMessageAt"] }.all? { |value| !value.nil? }).to be true
 
-      # Exactly one retry run: two messages total, no further growth after settling.
-      sleep 0.1
+      # The message barrier above also proves the retry has completed.
       expect(message_store.list_for_session(session["id"]).length).to eq(2)
     end
 
@@ -505,7 +884,7 @@ RSpec.describe "Sessions API" do
            { content: "slow discard test" }.to_json,
            { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
       expect(last_response.status).to eq(202)
-      sleep 0.05
+      Timeout.timeout(2) { Thread.pass until RelayDaemon::SessionRunner.running?(session["id"]) }
 
       post_discard(session["id"])
       expect(last_response.status).to eq(409)

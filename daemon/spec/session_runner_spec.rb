@@ -191,7 +191,7 @@ RSpec.describe RelayDaemon::SessionRunner do
       db_path: db_path,
       event_bus: event_bus
     )
-    sleep 0.05
+    Timeout.timeout(2) { Thread.pass until described_class.running?(session["id"]) }
     second = described_class.run_async(
       session_id: session["id"],
       content: "fast second",
@@ -211,6 +211,40 @@ RSpec.describe RelayDaemon::SessionRunner do
       ["user", "fast second"],
       ["assistant", "mode=resume\ntoken=#{session["id"]}\nprompt=fast second"]
     ])
+  end
+
+  it "runs sibling sessions concurrently" do
+    sibling = session_store.create(repo: repo, worktrees_dir: worktrees_dir)
+    first_gate = File.join(Dir.mktmpdir, "first-gate")
+    second_gate = File.join(Dir.mktmpdir, "second-gate")
+    first_started = File.join(Dir.mktmpdir, "first-started")
+    second_started = File.join(Dir.mktmpdir, "second-started")
+    File.mkfifo(first_gate)
+    File.mkfifo(second_gate)
+    script = File.join(Dir.mktmpdir, "blocking_agent.rb")
+    File.write(script, "File.write(ARGV.fetch(0), 'started'); File.open(ARGV.fetch(1), 'r').read; puts 'done'")
+    command = ->(started, gate) { ["ruby", script, started, gate, "{prompt}"] }
+
+    first = described_class.run_async(
+      session_id: session["id"], content: "first", worktree_path: worktree_path,
+      sessions_log_dir: sessions_log_dir, agent_command: command.call(first_started, first_gate),
+      db_path: db_path, event_bus: event_bus
+    )
+    second = described_class.run_async(
+      session_id: sibling["id"], content: "second", worktree_path: File.join(worktrees_dir, sibling["id"]),
+      sessions_log_dir: sessions_log_dir, agent_command: command.call(second_started, second_gate),
+      db_path: db_path, event_bus: event_bus
+    )
+
+    Timeout.timeout(2) { Thread.pass until File.exist?(first_started) && File.exist?(second_started) }
+    expect(described_class.running?(session["id"])).to be true
+    expect(described_class.running?(sibling["id"])).to be true
+    File.open(first_gate, "w") { |io| io.write("release") }
+    File.open(second_gate, "w") { |io| io.write("release") }
+    first.join
+    second.join
+    expect(described_class.running?(session["id"])).to be false
+    expect(described_class.running?(sibling["id"])).to be false
   end
 
   it "reports running? true while a run is in flight and false once it finishes" do

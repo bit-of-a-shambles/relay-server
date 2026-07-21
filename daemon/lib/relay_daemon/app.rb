@@ -29,6 +29,16 @@ module RelayDaemon
   class App < Sinatra::Base
     MAX_PUSH_DEVICE_BODY_BYTES = 512
 
+    @repo_locks_mutex = Mutex.new
+    @repo_locks = {}
+
+    class << self
+      def with_repo_lock(repo_id)
+        lock = @repo_locks_mutex.synchronize { @repo_locks[repo_id] ||= Mutex.new }
+        lock.synchronize { yield }
+      end
+    end
+
     set :show_exceptions, false
     # Local REST API — no browser clients, no CSRF surface.
     disable :protection
@@ -57,6 +67,37 @@ module RelayDaemon
     # ----- Helpers -----
 
     helpers do
+      def publish_session_updated(session)
+        settings.event_bus.publish(
+          type: "session.updated",
+          payload: {
+            "sessionId" => session["id"],
+            "repoId" => session["repoId"],
+            "title" => session["title"],
+            "status" => session["status"],
+            "lastMessageAt" => session["lastMessageAt"]
+          }
+        )
+      end
+
+      def require_active_session(session)
+        halt 409, JSON.generate({ error: "session is not active" }) unless session["status"] == "active"
+      end
+
+      def reserve_active_session(session_store, session_id, repo_id)
+        RelayDaemon::App.with_repo_lock(repo_id) do
+          current = session_store.find(session_id)
+          halt 404, JSON.generate({ error: "not found" }) if current.nil?
+          require_active_session(current)
+          RelayDaemon::SessionRunner.reserve(session_id)
+          current
+        end
+      end
+
+      def valid_session_title?(title)
+        title.is_a?(String) && !title.strip.empty? && title.strip.length <= RelayDaemon::SessionStore::MAX_TITLE_LENGTH
+      end
+
       # Redacted, client-facing shape for a provider hash (see
       # RelayDaemon::ProviderStore#all / #create): api_key is never
       # serialized to clients, only whether one is set.
@@ -388,6 +429,60 @@ module RelayDaemon
 
     # ----- Chat sessions -----
 
+    get "/repos/:id/sessions" do
+      content_type :json
+      repo_store = settings.repo_store
+      halt 503, JSON.generate({ error: "repo store not configured" }) if repo_store.nil?
+      session_store = settings.session_store
+      halt 503, JSON.generate({ error: "session store not configured" }) if session_store.nil?
+
+      repo_id = Integer(params[:id], 10) rescue nil
+      halt 422, JSON.generate({ error: "repo id must be an integer" }) if repo_id.nil?
+      halt 404, JSON.generate({ error: "repo not found" }) if repo_store.find(repo_id).nil?
+
+      JSON.generate(session_store.list_for_repo(repo_id))
+    end
+
+    post "/repos/:id/sessions" do
+      content_type :json
+      repo_store = settings.repo_store
+      halt 503, JSON.generate({ error: "repo store not configured" }) if repo_store.nil?
+      session_store = settings.session_store
+      halt 503, JSON.generate({ error: "session store not configured" }) if session_store.nil?
+
+      repo_id = Integer(params[:id], 10) rescue nil
+      halt 422, JSON.generate({ error: "repo id must be an integer" }) if repo_id.nil?
+      repo = repo_store.find(repo_id)
+      halt 404, JSON.generate({ error: "repo not found" }) if repo.nil?
+
+      body_str = request.body.read
+      data = if body_str.empty?
+               {}
+             else
+               begin
+                 JSON.parse(body_str)
+               rescue JSON::ParserError
+                 halt 400, JSON.generate({ error: "invalid JSON" })
+               end
+             end
+      unless data.is_a?(Hash)
+        halt 422, JSON.generate({ error: "body must be a JSON object" })
+      end
+      title = data["title"]
+      unless title.nil? || valid_session_title?(title)
+        halt 422, JSON.generate({ error: "title must be a non-empty string of at most 200 characters" })
+      end
+
+      session = RelayDaemon::App.with_repo_lock(repo["id"]) do
+        created = session_store.create(repo: repo, worktrees_dir: settings.relay_config.worktrees_dir)
+        created = session_store.rename(created["id"], title) unless title.nil?
+        created
+      end
+      status 201
+      publish_session_updated(session)
+      JSON.generate(session)
+    end
+
     post "/sessions" do
       content_type :json
 
@@ -410,14 +505,48 @@ module RelayDaemon
       repo = repo_store.find(data["repoId"])
       halt 422, JSON.generate({ error: "repo not found" }) if repo.nil?
 
-      existing = session_store.active_for_repo(repo["id"])
-      if existing
-        status 200
-        JSON.generate(existing)
-      else
-        status 201
-        JSON.generate(session_store.create(repo: repo, worktrees_dir: settings.relay_config.worktrees_dir))
+      session, created = RelayDaemon::App.with_repo_lock(repo["id"]) do
+        current = session_store.most_recent_active_for_repo(repo["id"])
+        current ? [current, false] : [session_store.create(repo: repo, worktrees_dir: settings.relay_config.worktrees_dir), true]
       end
+      status(created ? 201 : 200)
+      publish_session_updated(session) if created
+      JSON.generate(session)
+    end
+
+    get "/sessions/:id" do
+      content_type :json
+      session_store = settings.session_store
+      halt 503, JSON.generate({ error: "session store not configured" }) if session_store.nil?
+      session = session_store.find(params[:id])
+      halt 404, JSON.generate({ error: "not found" }) if session.nil?
+      JSON.generate(session)
+    end
+
+    patch "/sessions/:id" do
+      content_type :json
+      session_store = settings.session_store
+      halt 503, JSON.generate({ error: "session store not configured" }) if session_store.nil?
+      session = session_store.find(params[:id])
+      halt 404, JSON.generate({ error: "not found" }) if session.nil?
+      data = begin
+        JSON.parse(request.body.read)
+      rescue JSON::ParserError
+        halt 400, JSON.generate({ error: "invalid JSON" })
+      end
+      unless data.is_a?(Hash) && data.key?("title") && valid_session_title?(data["title"])
+        halt 422, JSON.generate({ error: "title must be a non-empty string of at most 200 characters" })
+      end
+
+      renamed = RelayDaemon::App.with_repo_lock(session["repoId"]) do
+        current = session_store.find(session["id"])
+        halt 404, JSON.generate({ error: "not found" }) if current.nil?
+        require_active_session(current)
+        session_store.rename(current["id"], data["title"])
+      end
+      halt 404, JSON.generate({ error: "not found" }) if renamed.nil?
+      publish_session_updated(renamed)
+      JSON.generate(renamed)
     end
 
     get "/sessions/:id/messages" do
@@ -460,42 +589,53 @@ module RelayDaemon
 
       session = session_store.find(params[:id])
       halt 404, JSON.generate({ error: "not found" }) if session.nil?
-      agent_command = settings.relay_config.agent_command
-      halt 503, JSON.generate({ error: "agent command not configured" }) if agent_command.nil?
 
-      message_store = RelayDaemon::MessageStore.new(db, session_store)
-      resume = !message_store.list_for_session(session["id"]).empty?
-      run_id = SecureRandom.uuid
-      message = message_store.append(
-        session_id: session["id"],
-        role: "user",
-        content: content,
-        agent_run_id: run_id
-      )
-      settings.event_bus.publish(
-        type: "message.created",
-        payload: { "sessionId" => session["id"], "message" => message }
-      )
+      reserved = false
+      begin
+        session = reserve_active_session(session_store, session["id"], session["repoId"])
+        reserved = true
+        agent_command = settings.relay_config.agent_command
+        halt 503, JSON.generate({ error: "agent command not configured" }) if agent_command.nil?
 
-      agent_argv = RelayDaemon::SessionRunner.build_argv(agent_command, content, session_id: session["id"], resume: resume)
-      agent_argv += ["--model", model_override] if model_override
+        message_store = RelayDaemon::MessageStore.new(db, session_store)
+        resume = !message_store.list_for_session(session["id"]).empty?
+        run_id = SecureRandom.uuid
+        message = message_store.append(
+          session_id: session["id"],
+          role: "user",
+          content: content,
+          agent_run_id: run_id
+        )
+        settings.event_bus.publish(
+          type: "message.created",
+          payload: { "sessionId" => session["id"], "message" => message }
+        )
+        publish_session_updated(T.must(session_store.find(session["id"])))
 
-      RelayDaemon::SessionRunner.run_async(
-        session_id: session["id"],
-        content: content,
-        worktree_path: File.join(settings.relay_config.worktrees_dir, session["id"]),
-        sessions_log_dir: File.join(settings.relay_config.agent_log_dir, "sessions"),
-        agent_command: agent_argv,
-        db_path: settings.relay_config.db_path,
-        event_bus: settings.event_bus,
-        router_base_url: settings.relay_config.router_base_url,
-        run_id: run_id,
-        append_user: false,
-        resume: resume,
-        push_notifier: settings.push_notifier
-      )
-      status 202
-      JSON.generate({ "id" => message["id"] })
+        agent_argv = RelayDaemon::SessionRunner.build_argv(agent_command, content, session_id: session["id"], resume: resume)
+        agent_argv += ["--model", model_override] if model_override
+
+        RelayDaemon::SessionRunner.run_async(
+          session_id: session["id"],
+          content: content,
+          worktree_path: File.join(settings.relay_config.worktrees_dir, session["id"]),
+          sessions_log_dir: File.join(settings.relay_config.agent_log_dir, "sessions"),
+          agent_command: agent_argv,
+          db_path: settings.relay_config.db_path,
+          event_bus: settings.event_bus,
+          router_base_url: settings.relay_config.router_base_url,
+          run_id: run_id,
+          append_user: false,
+          resume: resume,
+          push_notifier: settings.push_notifier,
+          reserved: true
+        )
+        reserved = false
+        status 202
+        JSON.generate({ "id" => message["id"] })
+      ensure
+        RelayDaemon::SessionRunner.release(session["id"]) if reserved
+      end
     end
 
     get "/sessions/:id/diff" do
@@ -546,66 +686,76 @@ module RelayDaemon
         halt 422, JSON.generate({ error: "autoRetry must be boolean" })
       end
 
-      test_command = repo["testCommand"]
-      test_store = RelayDaemon::SessionTestStore.new(db, session_store)
-      if test_command.nil? || test_command.empty?
-        test_store.record(session_id: session["id"], tests_passed: nil)
-        settings.push_notifier&.notify(RelayDaemon::PushNotifier::TESTS_FINISHED)
-        result = { "testsPassed" => nil }
-      else
-        log_path = File.join(settings.relay_config.agent_log_dir, "sessions", session["id"], "test.log")
-        FileUtils.mkdir_p(File.dirname(log_path))
-        pid = Process.spawn("sh", "-c", test_command, out: [log_path, "a"], err: [:child, :out],
-                            chdir: File.join(settings.relay_config.worktrees_dir, session["id"]))
-        _, test_status = Process.wait2(pid)
-        tests_passed = test_status.success?
-        test_store.record(session_id: session["id"], tests_passed: tests_passed)
-        settings.push_notifier&.notify(RelayDaemon::PushNotifier::TESTS_FINISHED)
-        result = { "testsPassed" => tests_passed }
+      reserved = false
+      begin
+        session = reserve_active_session(session_store, session["id"], session["repoId"])
+        reserved = true
+        test_command = repo["testCommand"]
+        test_store = RelayDaemon::SessionTestStore.new(db, session_store)
+        if test_command.nil? || test_command.empty?
+          test_store.record(session_id: session["id"], tests_passed: nil)
+          settings.push_notifier&.notify(RelayDaemon::PushNotifier::TESTS_FINISHED)
+          result = { "testsPassed" => nil }
+        else
+          log_path = File.join(settings.relay_config.agent_log_dir, "sessions", session["id"], "test.log")
+          FileUtils.mkdir_p(File.dirname(log_path))
+          pid = Process.spawn("sh", "-c", test_command, out: [log_path, "a"], err: [:child, :out],
+                              chdir: File.join(settings.relay_config.worktrees_dir, session["id"]))
+          _, test_status = Process.wait2(pid)
+          tests_passed = test_status.success?
+          test_store.record(session_id: session["id"], tests_passed: tests_passed)
+          settings.push_notifier&.notify(RelayDaemon::PushNotifier::TESTS_FINISHED)
+          result = { "testsPassed" => tests_passed }
 
-        if tests_passed == false && auto_retry
-          agent_command = settings.relay_config.agent_command
-          halt 503, JSON.generate({ error: "agent command not configured" }) if agent_command.nil?
+          if tests_passed == false && auto_retry
+            agent_command = settings.relay_config.agent_command
+            halt 503, JSON.generate({ error: "agent command not configured" }) if agent_command.nil?
 
-          tail_output = File.readlines(log_path).last(50).join
-          retry_content = "Tests failed:\n#{tail_output}Fix and keep changes minimal."
+            tail_output = File.readlines(log_path).last(50).join
+            retry_content = "Tests failed:\n#{tail_output}Fix and keep changes minimal."
 
-          message_store = RelayDaemon::MessageStore.new(db, session_store)
-          run_id = SecureRandom.uuid
-          message = message_store.append(
-            session_id: session["id"],
-            role: "user",
-            content: retry_content,
-            agent_run_id: run_id
-          )
-          settings.event_bus.publish(
-            type: "message.created",
-            payload: { "sessionId" => session["id"], "message" => message }
-          )
+            message_store = RelayDaemon::MessageStore.new(db, session_store)
+            run_id = SecureRandom.uuid
+            message = message_store.append(
+              session_id: session["id"],
+              role: "user",
+              content: retry_content,
+              agent_run_id: run_id
+            )
+            settings.event_bus.publish(
+              type: "message.created",
+              payload: { "sessionId" => session["id"], "message" => message }
+            )
+            publish_session_updated(T.must(session_store.find(session["id"])))
 
-          agent_argv = RelayDaemon::SessionRunner.build_argv(
-            agent_command, retry_content, session_id: session["id"], resume: true
-          )
+            agent_argv = RelayDaemon::SessionRunner.build_argv(
+              agent_command, retry_content, session_id: session["id"], resume: true
+            )
 
-          RelayDaemon::SessionRunner.run_async(
-            session_id: session["id"],
-            content: retry_content,
-            worktree_path: File.join(settings.relay_config.worktrees_dir, session["id"]),
-            sessions_log_dir: File.join(settings.relay_config.agent_log_dir, "sessions"),
-            agent_command: agent_argv,
-            db_path: settings.relay_config.db_path,
-            event_bus: settings.event_bus,
-            router_base_url: settings.relay_config.router_base_url,
-            run_id: run_id,
-            append_user: false,
-            resume: true,
-            escalated: true,
-            push_notifier: settings.push_notifier
-          )
+            RelayDaemon::SessionRunner.run_async(
+              session_id: session["id"],
+              content: retry_content,
+              worktree_path: File.join(settings.relay_config.worktrees_dir, session["id"]),
+              sessions_log_dir: File.join(settings.relay_config.agent_log_dir, "sessions"),
+              agent_command: agent_argv,
+              db_path: settings.relay_config.db_path,
+              event_bus: settings.event_bus,
+              router_base_url: settings.relay_config.router_base_url,
+              run_id: run_id,
+              append_user: false,
+              resume: true,
+              escalated: true,
+              push_notifier: settings.push_notifier,
+              reserved: true
+            )
+            reserved = false
+          end
         end
+        write_routing_config! if learn_from_outcome
+        JSON.generate(result)
+      ensure
+        RelayDaemon::SessionRunner.release(session["id"]) if reserved
       end
-      write_routing_config! if learn_from_outcome
-      JSON.generate(result)
     end
 
     post "/sessions/:id/approve" do
@@ -620,18 +770,24 @@ module RelayDaemon
       repo = repo_store.find(session["repoId"])
       halt 422, JSON.generate({ error: "repo not found" }) if repo.nil?
 
-      git = RelayDaemon::Git.new(repo["path"])
-      begin
-        git.merge(session["branch"])
-      rescue RelayDaemon::Git::GitError => e
-        halt 409, JSON.generate({ error: "merge_conflict" }) if e.message == "merge_conflict"
+      RelayDaemon::App.with_repo_lock(repo["id"]) do
+        session = session_store.find(params[:id])
+        halt 404, JSON.generate({ error: "not found" }) if session.nil?
+        require_active_session(session)
+        git = RelayDaemon::Git.new(repo["path"])
+        begin
+          git.merge(session["branch"])
+        rescue RelayDaemon::Git::GitError => e
+          halt 409, JSON.generate({ error: "merge_conflict" }) if e.message == "merge_conflict"
 
-        halt 500, JSON.generate({ error: e.message })
+          halt 500, JSON.generate({ error: e.message })
+        end
+
+        session_store.update_base_commit(session["id"], git.head_sha)
       end
-
-      session_store.update_base_commit(session["id"], git.head_sha)
-      settings.event_bus.publish(type: "session.updated", payload: { "sessionId" => session["id"] })
-      JSON.generate(T.must(session_store.find(session["id"])))
+      updated = T.must(session_store.find(session["id"]))
+      publish_session_updated(updated)
+      JSON.generate(updated)
     end
 
     post "/sessions/:id/discard" do
@@ -643,19 +799,22 @@ module RelayDaemon
       halt 503, JSON.generate({ error: "repo store not configured" }) if repo_store.nil?
       session = session_store.find(params[:id])
       halt 404, JSON.generate({ error: "not found" }) if session.nil?
-      halt 409, JSON.generate({ error: "already discarded" }) if session["status"] == "discarded"
-      if RelayDaemon::SessionRunner.running?(session["id"])
-        halt 409, JSON.generate({ error: "agent run in progress" })
-      end
       repo = repo_store.find(session["repoId"])
       halt 422, JSON.generate({ error: "repo not found" }) if repo.nil?
 
-      git = RelayDaemon::Git.new(repo["path"])
-      git.worktree_remove(File.join(settings.relay_config.worktrees_dir, session["id"]))
-      git.branch_delete(session["branch"])
-
-      discarded = session_store.discard(session["id"])
-      settings.event_bus.publish(type: "session.updated", payload: { "sessionId" => session["id"] })
+      discarded = RelayDaemon::App.with_repo_lock(repo["id"]) do
+        session = session_store.find(params[:id])
+        halt 404, JSON.generate({ error: "not found" }) if session.nil?
+        halt 409, JSON.generate({ error: "already discarded" }) if session["status"] == "discarded"
+        if RelayDaemon::SessionRunner.running?(session["id"])
+          halt 409, JSON.generate({ error: "agent run in progress" })
+        end
+        git = RelayDaemon::Git.new(repo["path"])
+        git.worktree_remove(File.join(settings.relay_config.worktrees_dir, session["id"]))
+        git.branch_delete(session["branch"])
+        session_store.discard(session["id"])
+      end
+      publish_session_updated(T.must(discarded))
       JSON.generate(T.must(discarded))
     end
 

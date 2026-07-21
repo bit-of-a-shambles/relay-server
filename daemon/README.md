@@ -86,7 +86,11 @@ GET  /fs/entries?path=...
 GET  /repos
 POST /repos
 
+GET  /repos/:id/sessions
+POST /repos/:id/sessions
 POST /sessions
+GET  /sessions/:id
+PATCH /sessions/:id
 GET  /sessions/:id/messages
 POST /sessions/:id/messages
 GET  /sessions/:id/diff
@@ -100,12 +104,18 @@ POST /internal/llm-calls
 WS   /ws?token=...
 ```
 
-Relay keeps one active chat session per repo. Posting `/sessions` repeatedly
-for the same repo returns that active session. `POST /sessions/:id/discard`
-abandons a session: it removes the session's worktree and branch, marks the
-row `discarded` (kept for stats/eval history), and frees the repo so a new
-session can be opened. It 409s if the session is already discarded or an
-agent run is currently in flight for it.
+Each repository can have multiple active chat sessions. `GET
+/repos/:id/sessions` lists active sessions newest by message activity, while
+`POST /repos/:id/sessions` always creates a fresh session and accepts an
+optional title. `PATCH /sessions/:id` renames an active session. The legacy
+`POST /sessions` route resumes the most recently active session for the repo,
+or creates one when none exists.
+
+`POST /sessions/:id/discard` abandons only the selected session: it removes
+that session's worktree and branch, marks its row `discarded` (kept for stats/
+eval history), and leaves sibling sessions active. Discarded sessions reject
+message, test, approve, and rename mutations. Approve and discard operations
+for sessions in the same repository are serialized.
 
 ## Pairing
 
@@ -147,7 +157,7 @@ RELAY_DAEMON_HOST="$(tailscale ip -4 | head -n 1)" RELAY_DAEMON_PORT=17777 bin/d
 ```json
 {"type":"message.created","payload":{"sessionId":"...","message":{}}}
 {"type":"agent.event","payload":{"sessionId":"...","agentRunId":"...","line":"..."}}
-{"type":"session.updated","payload":{"sessionId":"..."}}
+{"type":"session.updated","payload":{"sessionId":"...","repoId":1,"title":"...","status":"active","lastMessageAt":"..."}}
 {"type":"stats.updated","payload":{}}
 ```
 
