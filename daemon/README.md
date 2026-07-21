@@ -52,6 +52,7 @@ bundle exec rspec
 | `RELAY_WORKTREES_DIR` | `~/.relay/worktrees` | Session worktree root |
 | `RELAY_AGENT_LOG_DIR` | `~/.relay/runs` | Session run/test log root |
 | `RELAY_AGENT_COMMAND` | unset | Agent command template; `{prompt}` becomes one argv element |
+| `RELAY_CLAUDE_STREAMING` | `1` | Set `0` to disable Claude partial-message output; custom agents are unaffected |
 | `RELAY_ROUTER_BASE_URL` | unset | Router base URL, usually `http://127.0.0.1:7778/api` |
 | `RELAY_ROUTING_CONFIG` | unset | Routing config path the daemon may rewrite from eval outcomes |
 | `RELAY_PUSH_RELAY_URL` | unset | Push Worker HTTPS URL with exact `/push` path; requires relay token |
