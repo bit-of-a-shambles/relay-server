@@ -15,6 +15,7 @@ module RelayDaemon
 
     @locks_mutex = Mutex.new
     @locks = {}
+    @busy = {}
 
     class << self
       extend T::Sig
@@ -40,39 +41,56 @@ module RelayDaemon
           append_user: T::Boolean,
           resume: T.nilable(T::Boolean),
           escalated: T::Boolean,
-          push_notifier: T.nilable(PushNotifier)
+          push_notifier: T.nilable(PushNotifier),
+          reserved: T::Boolean
         ).returns(Thread)
       end
-      def run_async(session_id:, content:, worktree_path:, sessions_log_dir:, agent_command:, db_path:, event_bus:, agent_env: {}, router_base_url: nil, run_id: nil, append_user: true, resume: nil, escalated: false, push_notifier: nil)
+      def run_async(session_id:, content:, worktree_path:, sessions_log_dir:, agent_command:, db_path:, event_bus:, agent_env: {}, router_base_url: nil, run_id: nil, append_user: true, resume: nil, escalated: false, push_notifier: nil, reserved: false)
+        reserve(session_id) unless reserved
         Thread.new do
-          lock_for(session_id).synchronize do
-            run_once(
-              session_id: session_id,
-              content: content,
-              worktree_path: worktree_path,
-              sessions_log_dir: sessions_log_dir,
-              agent_command: agent_command,
-              db_path: db_path,
-              event_bus: event_bus,
-              agent_env: agent_env,
-              router_base_url: router_base_url,
-              run_id: run_id,
-              append_user: append_user,
-              resume: resume,
-              escalated: escalated,
-              push_notifier: push_notifier
-            )
+          begin
+            lock_for(session_id).synchronize do
+              run_once(
+                session_id: session_id,
+                content: content,
+                worktree_path: worktree_path,
+                sessions_log_dir: sessions_log_dir,
+                agent_command: agent_command,
+                db_path: db_path,
+                event_bus: event_bus,
+                agent_env: agent_env,
+                router_base_url: router_base_url,
+                run_id: run_id,
+                append_user: append_user,
+                resume: resume,
+                escalated: escalated,
+                push_notifier: push_notifier
+              )
+            end
+          ensure
+            release(session_id)
           end
         end
       end
 
-      # True while an agent run for +session_id+ is actively executing
-      # (i.e. the per-session lock used by run_async is held). Used to
-      # refuse discarding a session mid-run.
+      sig { params(session_id: String).void }
+      def reserve(session_id)
+        @locks_mutex.synchronize { @busy[session_id] = @busy.fetch(session_id, 0) + 1 }
+      end
+
+      sig { params(session_id: String).void }
+      def release(session_id)
+        @locks_mutex.synchronize do
+          count = @busy.fetch(session_id, 0) - 1
+          count.zero? ? @busy.delete(session_id) : @busy[session_id] = count
+        end
+      end
+
+      # True while an accepted session operation is active or waiting for its
+      # per-session runner lock. Used to refuse discarding a session mid-run.
       sig { params(session_id: String).returns(T::Boolean) }
       def running?(session_id)
-        lock = @locks_mutex.synchronize { @locks[session_id] }
-        !lock.nil? && lock.locked?
+        @locks_mutex.synchronize { @busy.fetch(session_id, 0).positive? }
       end
 
       private
@@ -154,6 +172,17 @@ module RelayDaemon
           role: "assistant",
           content: assistant_content,
           agent_run_id: run_id
+        )
+        updated_session = T.must(session_store.find(session_id))
+        event_bus.publish(
+          type: "session.updated",
+          payload: {
+            "sessionId" => updated_session["id"],
+            "repoId" => updated_session["repoId"],
+            "title" => updated_session["title"],
+            "status" => updated_session["status"],
+            "lastMessageAt" => updated_session["lastMessageAt"]
+          }
         )
         push_notifier&.notify(PushNotifier::AGENT_FINISHED)
       ensure
