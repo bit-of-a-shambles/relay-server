@@ -34,7 +34,8 @@ RSpec.describe RelayDaemon::Db do
         "002_add_base_commit",
         "006_chat_sessions",
         "007_session_eval_attribution",
-        "012_push_devices"
+        "012_push_devices",
+        "013_session_titles_and_repo_activity"
       )
     end
 
@@ -43,6 +44,33 @@ RSpec.describe RelayDaemon::Db do
                .execute("PRAGMA table_info(repos)")
                .map { |r| r["name"] }
       expect(cols).to include("id", "path", "name", "test_command", "created_at")
+    end
+
+    it "adds nullable session titles and the repo activity index" do
+      columns = db.connection.execute("PRAGMA table_info(chat_sessions)")
+      title = columns.find { |row| row["name"] == "title" }
+
+      expect(title["notnull"]).to eq(0)
+      indexes = db.connection.execute("PRAGMA index_list(chat_sessions)")
+      expect(indexes.map { |row| row["name"] }).to include(
+        "idx_chat_sessions_repo_status_activity"
+      )
+    end
+
+    it "backfills the first nonblank user message with Ruby-compatible trimming and truncation" do
+      legacy_path = File.join(Dir.mktmpdir, "legacy.sqlite3")
+      seed_database_at_migration_012(legacy_path)
+
+      migrated_db = described_class.new(legacy_path)
+      rows = migrated_db.connection.execute(
+        "SELECT id, title FROM chat_sessions ORDER BY id"
+      )
+
+      expect(rows).to eq([
+        { "id" => "backfill-blank-first", "title" => "usable title" },
+        { "id" => "backfill-long", "title" => "x" * 200 }
+      ])
+      migrated_db.connection.close
     end
 
     it "keeps the historical tasks table for old call-log joins" do
@@ -74,7 +102,7 @@ RSpec.describe RelayDaemon::Db do
                .map { |r| r["name"] }
       expect(cols).to include(
         "id", "repo_id", "branch", "base_commit", "status", "created_at",
-        "last_message_at"
+        "last_message_at", "title"
       )
     end
 
@@ -239,5 +267,57 @@ RSpec.describe RelayDaemon::Db do
 
       expect(call_count).to eq(1)
     end
+  end
+
+  private
+
+  def seed_database_at_migration_012(path)
+    connection = SQLite3::Database.new(path)
+    connection.results_as_hash = true
+    connection.execute(
+      "CREATE TABLE schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
+    )
+
+    Dir.glob(File.join(RelayDaemon::Db::MIGRATIONS_DIR, "*.sql")).sort
+      .reject { |file| File.basename(file, ".sql") > "012_push_devices" }
+      .each do |file|
+        version = File.basename(file, ".sql")
+        connection.execute_batch(File.read(file))
+        connection.execute(
+          "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+          [version, "2026-01-01T00:00:00Z"]
+        )
+      end
+
+    connection.execute(
+      "INSERT INTO repos (id, path, name, created_at) VALUES (?, ?, ?, ?)",
+      [1, "/tmp/legacy-repo", "legacy-repo", "2026-01-01T00:00:00Z"]
+    )
+    connection.execute(
+      "INSERT INTO chat_sessions (id, repo_id, branch, base_commit, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)",
+      ["backfill-long", 1, "relay/session/long", "0" * 40, "active", "2026-01-01T00:00:00Z"]
+    )
+    connection.execute(
+      "INSERT INTO chat_sessions (id, repo_id, branch, base_commit, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)",
+      ["backfill-blank-first", 1, "relay/session/blank", "0" * 40, "active", "2026-01-01T00:00:00Z"]
+    )
+    connection.execute(
+      "INSERT INTO messages (id, session_id, role, content, created_at)
+       VALUES (?, ?, ?, ?, ?)",
+      ["long-message", "backfill-long", "user", " \t\n#{"x" * 205}\r\n", "2026-01-01T00:00:00Z"]
+    )
+    connection.execute(
+      "INSERT INTO messages (id, session_id, role, content, created_at)
+       VALUES (?, ?, ?, ?, ?)",
+      ["blank-message", "backfill-blank-first", "user", " \t\n\r ", "2026-01-01T00:00:00Z"]
+    )
+    connection.execute(
+      "INSERT INTO messages (id, session_id, role, content, created_at)
+       VALUES (?, ?, ?, ?, ?)",
+      ["usable-message", "backfill-blank-first", "user", " \tusable title\n", "2026-01-01T00:00:01Z"]
+    )
+    connection.close
   end
 end

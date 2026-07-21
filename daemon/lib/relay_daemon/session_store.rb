@@ -12,6 +12,8 @@ module RelayDaemon
   class SessionStore
     extend T::Sig
 
+    MAX_TITLE_LENGTH = T.let(200, Integer)
+
     sig { params(db: Db).void }
     def initialize(db)
       @db = db
@@ -41,9 +43,9 @@ module RelayDaemon
       Git.new(repo_path).worktree_add(worktree_path, branch: branch)
 
       @db.connection.execute(
-        "INSERT INTO chat_sessions (id, repo_id, branch, base_commit, status, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)",
-        [id, repo_id, branch, base_commit, "active", now]
+        "INSERT INTO chat_sessions (id, repo_id, branch, base_commit, status, created_at, title)
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [id, repo_id, branch, base_commit, "active", now, nil]
       )
 
       T.must(find(id))
@@ -52,7 +54,7 @@ module RelayDaemon
     sig { params(id: String).returns(T.nilable(T::Hash[String, T.untyped])) }
     def find(id)
       row = @db.connection.get_first_row(
-        "SELECT id, repo_id, branch, base_commit, status, created_at, last_message_at
+        "SELECT id, repo_id, branch, base_commit, status, created_at, last_message_at, title
          FROM chat_sessions WHERE id = ?",
         [id]
       )
@@ -62,12 +64,55 @@ module RelayDaemon
     sig { params(repo_id: Integer).returns(T.nilable(T::Hash[String, T.untyped])) }
     def active_for_repo(repo_id)
       row = @db.connection.get_first_row(
-        "SELECT id, repo_id, branch, base_commit, status, created_at, last_message_at
+        "SELECT id, repo_id, branch, base_commit, status, created_at, last_message_at, title
          FROM chat_sessions WHERE repo_id = ? AND status = 'active'
          ORDER BY created_at ASC LIMIT 1",
         [repo_id]
       )
       row ? row_to_h(row) : nil
+    end
+
+    sig do
+      params(repo_id: Integer, active: T::Boolean)
+        .returns(T::Array[T::Hash[String, T.untyped]])
+    end
+    def list_for_repo(repo_id, active: true)
+      status_clause = active ? " AND status = 'active'" : ""
+      @db.connection.execute(
+        "SELECT id, repo_id, branch, base_commit, status, created_at, last_message_at, title
+         FROM chat_sessions
+         WHERE repo_id = ?#{status_clause}
+         ORDER BY COALESCE(last_message_at, created_at) DESC, created_at DESC, id DESC",
+        [repo_id]
+      ).map { |row| row_to_h(row) }
+    end
+
+    sig { params(repo_id: Integer).returns(T.nilable(T::Hash[String, T.untyped])) }
+    def most_recent_active_for_repo(repo_id)
+      list_for_repo(repo_id, active: true).first
+    end
+
+    sig { params(id: String, title: String).returns(T.nilable(T::Hash[String, T.untyped])) }
+    def rename(id, title)
+      normalized = normalize_title(title, truncate: false)
+      raise ArgumentError, "title is required" if normalized.nil?
+
+      @db.connection.execute(
+        "UPDATE chat_sessions SET title = ? WHERE id = ?",
+        [normalized, id]
+      )
+      find(id)
+    end
+
+    sig { params(id: String, content: String).void }
+    def assign_title_from_first_user_message(id, content)
+      normalized = normalize_title(content, truncate: true)
+      return if normalized.nil?
+
+      @db.connection.execute(
+        "UPDATE chat_sessions SET title = ? WHERE id = ? AND title IS NULL",
+        [normalized, id]
+      )
     end
 
     sig { params(id: String, base_commit: String).void }
@@ -108,8 +153,19 @@ module RelayDaemon
         "baseCommit" => row["base_commit"],
         "status" => row["status"],
         "createdAt" => row["created_at"],
-        "lastMessageAt" => row["last_message_at"]
+        "lastMessageAt" => row["last_message_at"],
+        "title" => row["title"]
       }
+    end
+
+    sig { params(title: String, truncate: T::Boolean).returns(T.nilable(String)) }
+    def normalize_title(title, truncate:)
+      normalized = title.strip
+      return nil if normalized.empty?
+      return normalized[0, MAX_TITLE_LENGTH] if truncate
+      return normalized if normalized.length <= MAX_TITLE_LENGTH
+
+      raise ArgumentError, "title is too long"
     end
   end
 
@@ -146,6 +202,7 @@ module RelayDaemon
         [id, session_id, role, content, now, agent_run_id]
       )
       @session_store.touch_last_message(session_id)
+      @session_store.assign_title_from_first_user_message(session_id, content) if role == "user"
 
       T.must(find(id))
     end
