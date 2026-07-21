@@ -156,10 +156,17 @@ RELAY_DAEMON_HOST="$(tailscale ip -4 | head -n 1)" RELAY_DAEMON_PORT=17777 bin/d
 
 ```json
 {"type":"message.created","payload":{"sessionId":"...","message":{}}}
+{"type":"assistant.updated","payload":{"sessionId":"...","agentRunId":"...","sequence":1,"content":"Cumulative assistant reply"}}
 {"type":"agent.event","payload":{"sessionId":"...","agentRunId":"...","line":"..."}}
 {"type":"session.updated","payload":{"sessionId":"...","repoId":1,"title":"...","status":"active","lastMessageAt":"..."}}
 {"type":"stats.updated","payload":{}}
 ```
+
+`assistant.updated` carries cumulative reply text and a monotonically increasing
+sequence number. Clients replace the matching run's preview only when the
+sequence advances, then replace that preview with the authoritative
+`message.created` message. `agent.event` is reserved for agent diagnostics and
+plain-command output.
 
 A bad or missing token closes the socket with code `4401`.
 

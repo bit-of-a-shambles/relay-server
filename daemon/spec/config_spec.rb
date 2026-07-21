@@ -15,6 +15,7 @@ RSpec.describe RelayDaemon::Config do
       ENV.delete("RELAY_PUSH_RELAY_URL")
       ENV.delete("RELAY_PUSH_RELAY_TOKEN")
       ENV.delete("RELAY_PUSH_ENVIRONMENT")
+      ENV.delete("RELAY_CLAUDE_STREAMING")
       ENV["RELAY_DAEMON_TOKEN"] = "t"
       example.run
       ENV.replace(saved)
@@ -28,6 +29,16 @@ RSpec.describe RelayDaemon::Config do
 
     it "defaults router_command to npm run start" do
       expect(described_class.from_env.router_command).to eq(["npm", "run", "start"])
+    end
+
+    it "enables Claude streaming only when the menubar capability is set" do
+      expect(described_class.from_env.claude_streaming).to be(false)
+
+      ENV["RELAY_CLAUDE_STREAMING"] = "1"
+      expect(described_class.from_env.claude_streaming).to be(true)
+
+      ENV["RELAY_CLAUDE_STREAMING"] = "true"
+      expect(described_class.from_env.claude_streaming).to be(false)
     end
 
     it "reads router_dir from RELAY_ROUTER_DIR" do
