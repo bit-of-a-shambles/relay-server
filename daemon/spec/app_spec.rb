@@ -140,8 +140,8 @@ RSpec.describe RelayDaemon::App do
 
     let(:valid_body) do
       {
-        requestedModel: "claude-3-haiku",
-        routedModel: "moonshotai/kimi-k2",
+        requestedModel: "deepseek-flash",
+        routedModel: "openai/gpt-5.5",
         provider: "openrouter",
         tier: 1,
         promptTokens: 100,
@@ -185,7 +185,7 @@ RSpec.describe RelayDaemon::App do
       it "persists the record in llm_calls" do
         rows = db.connection.execute("SELECT * FROM llm_calls")
         expect(rows.length).to eq(1)
-        expect(rows.first["requested_model"]).to eq("claude-3-haiku")
+        expect(rows.first["requested_model"]).to eq("deepseek-flash")
       end
 
       it "persists the provider column" do

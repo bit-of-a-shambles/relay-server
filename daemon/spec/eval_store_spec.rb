@@ -61,13 +61,13 @@ RSpec.describe RelayDaemon::EvalStore do
 
     it "computes a per-model pass rate over distinct session outcomes that ran tests" do
       session = insert_session(id: "session-eval-pass-rate")
-      insert_session_call(model: "moonshotai/kimi-k2", session_id: session, created_at: "2026-07-01T10:00:00Z", cost_usd: 0.001)
-      insert_session_call(model: "moonshotai/kimi-k2", session_id: session, created_at: "2026-07-01T10:00:30Z", cost_usd: 0.002)
+      insert_session_call(model: "openai/gpt-5.5", session_id: session, created_at: "2026-07-01T10:00:00Z", cost_usd: 0.001)
+      insert_session_call(model: "openai/gpt-5.5", session_id: session, created_at: "2026-07-01T10:00:30Z", cost_usd: 0.002)
       insert_session_test(session_id: session, tests_passed: 1, created_at: "2026-07-01T10:01:00Z")
-      insert_session_call(model: "moonshotai/kimi-k2", session_id: session, created_at: "2026-07-01T10:02:00Z", cost_usd: 0.001)
+      insert_session_call(model: "openai/gpt-5.5", session_id: session, created_at: "2026-07-01T10:02:00Z", cost_usd: 0.001)
       insert_session_test(session_id: session, tests_passed: 0, created_at: "2026-07-01T10:03:00Z")
 
-      row = store.model_outcomes.find { |r| r[:model] == "moonshotai/kimi-k2" }
+      row = store.model_outcomes.find { |r| r[:model] == "openai/gpt-5.5" }
       expect(row[:calls]).to eq(3)
       expect(row[:outcomes]).to eq(2)
       expect(row[:outcomesWithTests]).to eq(2)
@@ -78,9 +78,9 @@ RSpec.describe RelayDaemon::EvalStore do
 
     it "reports a nil pass rate when no session outcome has a test result yet" do
       session = insert_session(id: "session-eval-untested")
-      insert_session_call(model: "deepseek/deepseek-chat", session_id: session, created_at: Time.now.utc.iso8601)
+      insert_session_call(model: "x-ai/grok-4.5", session_id: session, created_at: Time.now.utc.iso8601)
 
-      row = store.model_outcomes.find { |r| r[:model] == "deepseek/deepseek-chat" }
+      row = store.model_outcomes.find { |r| r[:model] == "x-ai/grok-4.5" }
       expect(row[:outcomes]).to eq(1)
       expect(row[:outcomesWithTests]).to eq(0)
       expect(row[:passRate]).to be_nil
@@ -102,18 +102,18 @@ RSpec.describe RelayDaemon::EvalStore do
     it "breaks results down per routed model" do
       a = insert_session(id: "session-model-a")
       b = insert_session(id: "session-model-b")
-      insert_session_call(model: "moonshotai/kimi-k2", session_id: a, created_at: "2026-07-01T10:00:00Z")
+      insert_session_call(model: "openai/gpt-5.5", session_id: a, created_at: "2026-07-01T10:00:00Z")
       insert_session_test(session_id: a, tests_passed: 1, created_at: "2026-07-01T10:01:00Z")
-      insert_session_call(model: "deepseek/deepseek-chat", session_id: b, created_at: "2026-07-01T10:00:00Z")
+      insert_session_call(model: "x-ai/grok-4.5", session_id: b, created_at: "2026-07-01T10:00:00Z")
       insert_session_test(session_id: b, tests_passed: 1, created_at: "2026-07-01T10:01:00Z")
       expect(store.model_outcomes.map { |r| r[:model] })
-        .to eq(["deepseek/deepseek-chat", "moonshotai/kimi-k2"])
+        .to eq(["openai/gpt-5.5", "x-ai/grok-4.5"])
     end
 
     it "attributes session calls to the first later session test run" do
       session = insert_session(id: "session-eval-1")
       insert_session_call(
-        model: "moonshotai/kimi-k2",
+        model: "openai/gpt-5.5",
         session_id: session,
         created_at: "2026-07-01T10:00:00Z",
         cost_usd: 0.001
@@ -124,7 +124,7 @@ RSpec.describe RelayDaemon::EvalStore do
         created_at: "2026-07-01T10:01:00Z"
       )
       insert_session_call(
-        model: "moonshotai/kimi-k2",
+        model: "openai/gpt-5.5",
         session_id: session,
         created_at: "2026-07-01T10:02:00Z",
         cost_usd: 0.002
@@ -145,7 +145,7 @@ RSpec.describe RelayDaemon::EvalStore do
         "2026-07-01T10:03:00Z"
       ])
 
-      row = store.model_outcomes.find { |r| r[:model] == "moonshotai/kimi-k2" }
+      row = store.model_outcomes.find { |r| r[:model] == "openai/gpt-5.5" }
       expect(row[:calls]).to eq(2)
       expect(row[:outcomes]).to eq(2)
       expect(row[:outcomesWithTests]).to eq(2)
@@ -190,7 +190,7 @@ RSpec.describe "GET /eval/model-outcomes via app" do
       [session_id, repo_id, "relay/session/#{session_id}", "0" * 40, Time.now.utc.iso8601]
     )
     db.connection.execute(
-      "INSERT INTO llm_calls (session_id, requested_model, routed_model, tier, prompt_tokens, completion_tokens, cost_usd, frontier_cost_usd, latency_ms, status, created_at) VALUES (?, 'requested', 'moonshotai/kimi-k2', 1, 100, 50, 0.001, 0.01, 100, 'success', ?)",
+      "INSERT INTO llm_calls (session_id, requested_model, routed_model, tier, prompt_tokens, completion_tokens, cost_usd, frontier_cost_usd, latency_ms, status, created_at) VALUES (?, 'requested', 'openai/gpt-5.5', 1, 100, 50, 0.001, 0.01, 100, 'success', ?)",
       [session_id, "2026-07-01T10:00:00Z"]
     )
     db.connection.execute(
@@ -202,7 +202,7 @@ RSpec.describe "GET /eval/model-outcomes via app" do
     expect(last_response.status).to eq(200)
     body = JSON.parse(last_response.body)
     expect(body["modelOutcomes"]).to be_an(Array)
-    row = body["modelOutcomes"].find { |r| r["model"] == "moonshotai/kimi-k2" }
+    row = body["modelOutcomes"].find { |r| r["model"] == "openai/gpt-5.5" }
     expect(row["passRate"]).to eq(1.0)
   end
 

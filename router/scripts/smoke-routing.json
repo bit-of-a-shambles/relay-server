@@ -1,15 +1,43 @@
 {
   "tiers": {
-    "0": ["google/gemma-4-31b-it:free", "openai/gpt-oss-20b:free", "nvidia/nemotron-nano-9b-v2:free"],
-    "1": ["google/gemma-4-31b-it:free", "openai/gpt-oss-20b:free", "nvidia/nemotron-nano-9b-v2:free"],
-    "2": ["google/gemma-4-31b-it:free", "openai/gpt-oss-20b:free", "nvidia/nemotron-nano-9b-v2:free"],
-    "3": ["google/gemma-4-31b-it:free", "openai/gpt-oss-20b:free", "nvidia/nemotron-nano-9b-v2:free"]
+    "0": [
+      "deepseek/deepseek-v4-flash"
+    ],
+    "1": [
+      "deepseek/deepseek-v4-flash",
+      "openai/gpt-5.5",
+      "x-ai/grok-4.5"
+    ],
+    "2": [
+      "openai/gpt-5.6-terra",
+      "openai/gpt-5.6-luna"
+    ],
+    "3": [
+      "openai/gpt-5.6-sol",
+      "anthropic/claude-fable-5"
+    ]
   },
   "rules": [
-    { "when": "default", "tier": 0 }
+    {
+      "when": "requestedModel contains 'haiku'",
+      "tier": 0
+    },
+    {
+      "when": "requestedModel contains 'flash'",
+      "tier": 0
+    },
+    {
+      "when": "promptTokens > 60000",
+      "tier": 2
+    },
+    {
+      "when": "default",
+      "tier": 1
+    }
   ],
   "qualityDial": {
-    "default": 0
+    "default": 5
   },
-  "frontierModel": "google/gemma-4-31b-it:free"
+  "frontierModel": "openai/gpt-5.6-sol",
+  "providers": {}
 }

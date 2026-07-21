@@ -548,12 +548,12 @@ RSpec.describe "Sessions API" do
       session = create_session
 
       post "/sessions/#{session["id"]}/messages",
-           { content: "hello", modelOverride: "deepseek/deepseek-chat" }.to_json,
+           { content: "hello", modelOverride: "x-ai/grok-4.5" }.to_json,
            { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
       expect(last_response.status).to eq(202)
 
       messages = wait_for_messages(session["id"], 2)
-      expect(messages.last["content"]).to include("model=deepseek/deepseek-chat")
+      expect(messages.last["content"]).to include("model=x-ai/grok-4.5")
     end
 
     it "returns validation and not-found errors" do

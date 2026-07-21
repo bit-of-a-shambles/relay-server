@@ -68,36 +68,36 @@ RSpec.describe RelayDaemon::RoutingConfigWriter do
   describe "#config" do
     it "keeps base tier order when there is no outcome data" do
       writer = described_class.new(eval_store, min_samples: 1)
-      expect(writer.config["tiers"]["1"]).to eq(["moonshotai/kimi-k2", "deepseek/deepseek-chat"])
+      expect(writer.config["tiers"]["1"]).to eq(["openai/gpt-5.5", "x-ai/grok-4.5", "z-ai/glm-5.2"])
     end
 
     it "reorders a tier so the higher-passing model is routed first" do
-      record(model: "moonshotai/kimi-k2",     passed: 1, failed: 1) # 0.5
-      record(model: "deepseek/deepseek-chat", passed: 2, failed: 0) # 1.0
+      record(model: "openai/gpt-5.5",     passed: 1, failed: 1) # 0.5
+      record(model: "x-ai/grok-4.5", passed: 2, failed: 0) # 1.0
       writer = described_class.new(eval_store, min_samples: 1)
-      expect(writer.config["tiers"]["1"]).to eq(["deepseek/deepseek-chat", "moonshotai/kimi-k2"])
+      expect(writer.config["tiers"]["1"]).to eq(["x-ai/grok-4.5", "openai/gpt-5.5", "z-ai/glm-5.2"])
     end
 
     it "floats a model with enough samples ahead of one below the threshold" do
-      record(model: "deepseek/deepseek-chat", passed: 2, failed: 0) # 2 samples
-      record(model: "moonshotai/kimi-k2",     passed: 1, failed: 0) # 1 sample
+      record(model: "x-ai/grok-4.5", passed: 2, failed: 0) # 2 samples
+      record(model: "openai/gpt-5.5",     passed: 1, failed: 0) # 1 sample
       writer = described_class.new(eval_store, min_samples: 2)
-      # kimi has too few samples to score, so deepseek (scored) leads.
-      expect(writer.config["tiers"]["1"]).to eq(["deepseek/deepseek-chat", "moonshotai/kimi-k2"])
+      # OpenAI has too few samples to score, so Grok (scored) leads.
+      expect(writer.config["tiers"]["1"]).to eq(["x-ai/grok-4.5", "openai/gpt-5.5", "z-ai/glm-5.2"])
     end
 
     it "ignores models with no test results yet" do
       session_id = insert_session
-      insert_call(model: "deepseek/deepseek-chat", session_id: session_id, created_at: Time.now.utc.iso8601)
+      insert_call(model: "x-ai/grok-4.5", session_id: session_id, created_at: Time.now.utc.iso8601)
       writer = described_class.new(eval_store, min_samples: 1)
-      expect(writer.config["tiers"]["1"]).to eq(["moonshotai/kimi-k2", "deepseek/deepseek-chat"])
+      expect(writer.config["tiers"]["1"]).to eq(["openai/gpt-5.5", "x-ai/grok-4.5", "z-ai/glm-5.2"])
     end
 
     it "preserves rules, quality dial, and frontier model" do
       cfg = described_class.new(eval_store).config
       expect(cfg["rules"]).to include({ "when" => "default", "tier" => 1 })
       expect(cfg["qualityDial"]).to eq("default" => 5)
-      expect(cfg["frontierModel"]).to eq("anthropic/claude-opus-latest")
+      expect(cfg["frontierModel"]).to eq("openai/gpt-5.6-sol")
     end
 
     it "defaults providers to an empty hash when no provider store is configured" do
@@ -123,12 +123,12 @@ RSpec.describe RelayDaemon::RoutingConfigWriter do
 
   describe "#write!" do
     it "writes valid JSON (creating parent dirs) that the router can consume" do
-      record(model: "deepseek/deepseek-chat", passed: 2, failed: 0)
+      record(model: "x-ai/grok-4.5", passed: 2, failed: 0)
       path = File.join(Dir.mktmpdir, "nested", "routing.json")
       described_class.new(eval_store, min_samples: 1).write!(path)
 
       parsed = JSON.parse(File.read(path))
-      expect(parsed["tiers"]["1"].first).to eq("deepseek/deepseek-chat")
+      expect(parsed["tiers"]["1"].first).to eq("x-ai/grok-4.5")
       expect(parsed["rules"].last).to eq("when" => "default", "tier" => 1)
     end
 

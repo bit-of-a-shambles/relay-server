@@ -78,9 +78,9 @@ RSpec.describe RelayDaemon::Stats do
 
   describe "#compute with call records" do
     before do
-      insert_call(model: "moonshotai/kimi-k2",    cost_usd: 0.001, frontier_cost_usd: 0.01, prompt_tokens: 100, completion_tokens: 50)
-      insert_call(model: "moonshotai/kimi-k2",    cost_usd: 0.002, frontier_cost_usd: 0.02, prompt_tokens: 200, completion_tokens: 80)
-      insert_call(model: "deepseek/deepseek-chat", cost_usd: 0.0005, frontier_cost_usd: 0.005, prompt_tokens: 50, completion_tokens: 20)
+      insert_call(model: "openai/gpt-5.5",    cost_usd: 0.001, frontier_cost_usd: 0.01, prompt_tokens: 100, completion_tokens: 50)
+      insert_call(model: "openai/gpt-5.5",    cost_usd: 0.002, frontier_cost_usd: 0.02, prompt_tokens: 200, completion_tokens: 80)
+      insert_call(model: "x-ai/grok-4.5", cost_usd: 0.0005, frontier_cost_usd: 0.005, prompt_tokens: 50, completion_tokens: 20)
     end
 
     it "aggregates spend across all calls" do
@@ -101,12 +101,12 @@ RSpec.describe RelayDaemon::Stats do
     it "breaks down by routed model" do
       result = stats.compute
       models = result[:perModel].map { |r| r[:model] }
-      expect(models).to include("moonshotai/kimi-k2", "deepseek/deepseek-chat")
+      expect(models).to include("openai/gpt-5.5", "x-ai/grok-4.5")
     end
 
     it "sums token counts per model" do
       result = stats.compute
-      kimi = result[:perModel].find { |r| r[:model] == "moonshotai/kimi-k2" }
+      kimi = result[:perModel].find { |r| r[:model] == "openai/gpt-5.5" }
       expect(kimi[:calls]).to eq(2)
       expect(kimi[:promptTokens]).to eq(300)
       expect(kimi[:completionTokens]).to eq(130)
@@ -125,8 +125,8 @@ RSpec.describe RelayDaemon::Stats do
 
   describe "#compute Phase 2 acceptance: ≥2 models with nonzero savedUsd" do
     it "shows nonzero savings when calls went to cheaper models" do
-      insert_call(model: "moonshotai/kimi-k2",    cost_usd: 0.001, frontier_cost_usd: 0.05)
-      insert_call(model: "deepseek/deepseek-chat", cost_usd: 0.0005, frontier_cost_usd: 0.04)
+      insert_call(model: "openai/gpt-5.5",    cost_usd: 0.001, frontier_cost_usd: 0.05)
+      insert_call(model: "x-ai/grok-4.5", cost_usd: 0.0005, frontier_cost_usd: 0.04)
       result = stats.compute
       expect(result[:perModel].length).to be >= 2
       expect(result[:savedUsd]).to be > 0

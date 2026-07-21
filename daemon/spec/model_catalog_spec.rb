@@ -15,9 +15,9 @@ RSpec.describe RelayDaemon::ModelCatalog do
       result = described_class.new(nil).catalog
 
       expect(result["source"]).to eq("default")
-      expect(result["frontierModel"]).to eq("anthropic/claude-opus-latest")
+      expect(result["frontierModel"]).to eq("openai/gpt-5.6-sol")
       expect(result["tiers"].map { |t| t["tier"] }).to eq([0, 1, 2, 3])
-      expect(result["tiers"].first).to eq({ "tier" => 0, "models" => ["qwen/qwen3-coder-small"] })
+      expect(result["tiers"].first).to eq({ "tier" => 0, "models" => ["deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-pro"] })
       expect(result["custom"]).to eq([])
     end
 
@@ -39,7 +39,7 @@ RSpec.describe RelayDaemon::ModelCatalog do
       result = described_class.new(missing_path).catalog
 
       expect(result["source"]).to eq("default")
-      expect(result["frontierModel"]).to eq("anthropic/claude-opus-latest")
+      expect(result["frontierModel"]).to eq("openai/gpt-5.6-sol")
     end
 
     it "returns the built-in default when the file contains malformed JSON" do
@@ -55,17 +55,17 @@ RSpec.describe RelayDaemon::ModelCatalog do
       path = File.join(Dir.mktmpdir, "routing.json")
       File.write(path, JSON.generate({
         "tiers" => {
-          "2" => ["anthropic/claude-sonnet-latest"],
-          "0" => ["qwen/qwen3-coder-small"]
+          "2" => ["openai/gpt-5.6-terra"],
+          "0" => ["deepseek/deepseek-v4-flash"]
         },
-        "frontierModel" => "anthropic/claude-opus-latest"
+        "frontierModel" => "openai/gpt-5.6-sol"
       }))
 
       result = described_class.new(path).catalog
 
       expect(result["source"]).to eq("file")
       expect(result["tiers"].map { |t| t["tier"] }).to eq([0, 2])
-      expect(result["frontierModel"]).to eq("anthropic/claude-opus-latest")
+      expect(result["frontierModel"]).to eq("openai/gpt-5.6-sol")
     end
 
     it "reflects a config written by RoutingConfigWriter (write then read round trip)" do
@@ -85,7 +85,7 @@ RSpec.describe RelayDaemon::ModelCatalog do
         db.connection.execute(
           "INSERT INTO llm_calls (session_id, requested_model, routed_model, tier, prompt_tokens, " \
           "completion_tokens, cost_usd, frontier_cost_usd, latency_ms, status, created_at) VALUES " \
-          "(?, 'requested', 'deepseek/deepseek-chat', 1, 100, 50, 0.001, 0.01, 100, 'success', ?)",
+          "(?, 'requested', 'x-ai/grok-4.5', 1, 100, 50, 0.001, 0.01, 100, 'success', ?)",
           [session_id, "2026-07-01T10:00:00Z"]
         )
         db.connection.execute(
@@ -100,9 +100,9 @@ RSpec.describe RelayDaemon::ModelCatalog do
 
         expect(result["source"]).to eq("file")
         tier1 = result["tiers"].find { |t| t["tier"] == 1 }
-        # deepseek has a measured 100% pass rate, so it's reordered to the
-        # front of tier 1 (base order is kimi-k2 then deepseek).
-        expect(tier1["models"]).to eq(["deepseek/deepseek-chat", "moonshotai/kimi-k2"])
+        # Grok has a measured 100% pass rate, so it is reordered to the
+        # front of tier 1. Unscored GLM stays after the base-order models.
+        expect(tier1["models"]).to eq(["x-ai/grok-4.5", "openai/gpt-5.5", "z-ai/glm-5.2"])
       ensure
         db.connection.close
       end
@@ -141,7 +141,7 @@ RSpec.describe "GET /models via app" do
     body = JSON.parse(last_response.body)
     expect(body["source"]).to eq("default")
     expect(body["tiers"].map { |t| t["tier"] }).to eq([0, 1, 2, 3])
-    expect(body["frontierModel"]).to eq("anthropic/claude-opus-latest")
+    expect(body["frontierModel"]).to eq("openai/gpt-5.6-sol")
     expect(body["custom"]).to eq([])
   end
 
@@ -177,7 +177,7 @@ RSpec.describe "GET /models via app" do
       db.connection.execute(
         "INSERT INTO llm_calls (session_id, requested_model, routed_model, tier, prompt_tokens, " \
         "completion_tokens, cost_usd, frontier_cost_usd, latency_ms, status, created_at) VALUES " \
-        "(?, 'requested', 'deepseek/deepseek-chat', 1, 100, 50, 0.001, 0.01, 100, 'success', ?)",
+        "(?, 'requested', 'x-ai/grok-4.5', 1, 100, 50, 0.001, 0.01, 100, 'success', ?)",
         [session_id, "2026-07-01T10:00:00Z"]
       )
       db.connection.execute(
@@ -199,7 +199,7 @@ RSpec.describe "GET /models via app" do
       body = JSON.parse(last_response.body)
       expect(body["source"]).to eq("file")
       tier1 = body["tiers"].find { |t| t["tier"] == 1 }
-      expect(tier1["models"]).to eq(["deepseek/deepseek-chat", "moonshotai/kimi-k2"])
+      expect(tier1["models"]).to eq(["x-ai/grok-4.5", "openai/gpt-5.5", "z-ai/glm-5.2"])
     ensure
       db.connection.close
     end

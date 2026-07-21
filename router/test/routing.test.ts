@@ -81,16 +81,20 @@ describe("routing", () => {
 
   it("selects tiers using requested model, prompt size, dial, clamping, and escalation", () => {
     expect(
-      chooseRoute(request({ model: "deepseek/deepseek-chat" }), DEFAULT_ROUTING_CONFIG)
+      chooseRoute(request({ model: "x-ai/grok-4.5" }), DEFAULT_ROUTING_CONFIG)
     ).toMatchObject({
       tier: 1,
-      requestedModel: "deepseek/deepseek-chat",
-      routedModel: "deepseek/deepseek-chat"
+      requestedModel: "x-ai/grok-4.5",
+      routedModel: "x-ai/grok-4.5"
     });
 
-    expect(chooseRoute(request({ model: "claude-haiku" }), DEFAULT_ROUTING_CONFIG)).toMatchObject({
+    expect(chooseRoute(request({ model: "claude-3-5-haiku-20241022" }), DEFAULT_ROUTING_CONFIG)).toMatchObject({
       tier: 0,
-      routedModel: "qwen/qwen3-coder-small"
+      routedModel: "deepseek/deepseek-v4-flash"
+    });
+    expect(chooseRoute(request({ model: "deepseek-flash" }), DEFAULT_ROUTING_CONFIG)).toMatchObject({
+      tier: 0,
+      routedModel: "deepseek/deepseek-v4-flash"
     });
     expect(
       chooseRoute(request({ metadata: { qualityDial: 0 } }), DEFAULT_ROUTING_CONFIG)
@@ -118,7 +122,7 @@ describe("routing", () => {
     const large = request({ content: "x".repeat(260_000) });
     expect(chooseRoute(large, DEFAULT_ROUTING_CONFIG)).toMatchObject({
       tier: 2,
-      routedModel: "anthropic/claude-sonnet-latest"
+      routedModel: "openai/gpt-5.6-terra"
     });
   });
 
@@ -148,7 +152,7 @@ describe("routing", () => {
   });
 
   it("estimates frontier cost", () => {
-    expect(estimateFrontierCostUsd(1_000_000, 1_000_000)).toBe(90);
+    expect(estimateFrontierCostUsd(1_000_000, 1_000_000)).toBe(35);
   });
 
   it("throws when direct configs are missing a matched route or tier model", () => {
@@ -295,10 +299,10 @@ describe("resolveUpstream", () => {
   const options = { openRouterBaseUrl: "https://openrouter.ai/api/v1", openRouterApiKey: "sk-or" };
 
   it("returns the built-in openrouter upstream when the model has no '::'", () => {
-    expect(resolveUpstream("moonshotai/kimi-k2", config, options)).toEqual({
+    expect(resolveUpstream("openai/gpt-5.5", config, options)).toEqual({
       baseUrl: "https://openrouter.ai/api/v1",
       apiKey: "sk-or",
-      model: "moonshotai/kimi-k2"
+      model: "openai/gpt-5.5"
     });
   });
 
@@ -449,8 +453,8 @@ describe("call log sinks", () => {
 
 const sampleRecord: LlmCallRecord = {
   sessionId: "session-1",
-  requestedModel: "claude-haiku",
-  routedModel: "moonshotai/kimi-k2",
+  requestedModel: "deepseek-flash",
+  routedModel: "openai/gpt-5.5",
   provider: "openrouter",
   tier: 1,
   promptTokens: 100,
@@ -485,7 +489,7 @@ describe("HttpCallLogSink", () => {
     expect(req.headers.get("Authorization")).toBe("Bearer my-token");
     expect(req.headers.get("Content-Type")).toBe("application/json");
     const body = JSON.parse(await req.text());
-    expect(body).toMatchObject({ sessionId: "session-1", requestedModel: "claude-haiku", status: "success" });
+    expect(body).toMatchObject({ sessionId: "session-1", requestedModel: "deepseek-flash", status: "success" });
   });
 
   it("swallows network errors (Error instance) and logs to console.error", async () => {
