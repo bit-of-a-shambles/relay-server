@@ -35,15 +35,15 @@ RSpec.describe RelayDaemon::EvalStore do
     id
   end
 
-  def insert_session_call(model:, session_id:, created_at:, cost_usd: 0.001)
+  def insert_session_call(model:, session_id:, created_at:, cost_usd: 0.001, route_target: model)
     db.connection.execute(
       <<~SQL,
         INSERT INTO llm_calls
-          (session_id, requested_model, routed_model, tier, prompt_tokens, completion_tokens,
+          (session_id, requested_model, route_target, routed_model, tier, prompt_tokens, completion_tokens,
            cost_usd, frontier_cost_usd, latency_ms, status, created_at)
-        VALUES (?, 'requested', ?, 1, 100, 50, ?, 0.01, 100, 'success', ?)
+        VALUES (?, 'requested', ?, ?, 1, 100, 50, ?, 0.01, 100, 'success', ?)
       SQL
-      [session_id, model, cost_usd, created_at]
+      [session_id, route_target, model, cost_usd, created_at]
     )
   end
 
@@ -108,6 +108,21 @@ RSpec.describe RelayDaemon::EvalStore do
       insert_session_test(session_id: b, tests_passed: 1, created_at: "2026-07-01T10:01:00Z")
       expect(store.model_outcomes.map { |r| r[:model] })
         .to eq(["openai/gpt-5.5", "x-ai/grok-4.5"])
+    end
+
+    it "groups managed-router outcomes by selected target instead of serving model" do
+      session = insert_session(id: "session-managed-target")
+      insert_session_call(
+        model: "anthropic/claude-sonnet-4.6",
+        route_target: "openrouter-auto",
+        session_id: session,
+        created_at: "2026-07-01T10:00:00Z"
+      )
+      insert_session_test(session_id: session, tests_passed: 1, created_at: "2026-07-01T10:01:00Z")
+
+      expect(store.model_outcomes).to contain_exactly(
+        hash_including(model: "openrouter-auto", passRate: 1.0)
+      )
     end
 
     it "attributes session calls to the first later session test run" do

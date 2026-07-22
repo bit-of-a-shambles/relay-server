@@ -42,7 +42,10 @@ describe("routing", () => {
           tiers: { "0": ["cheap"], "1": ["default"], "2": ["frontier"] },
           rules: [{ when: "default", tier: 1 }],
           qualityDial: { default: 5 },
-          frontierModel: "frontier"
+          frontierModel: "frontier",
+          targets: {
+            "openrouter-auto": { model: "openrouter/auto-beta" }
+          }
         })
       );
 
@@ -56,13 +59,17 @@ describe("routing", () => {
         JSON.stringify({
           tiers: { "0": ["cheap"], "1": ["changed"], "2": ["frontier"] },
           rules: [{ when: "default", tier: 1 }],
-          qualityDial: { default: "not a number" }
+          qualityDial: { default: "not a number" },
+          targets: { "openrouter-auto": { model: "openrouter/auto-beta" } }
         })
       );
 
       expect(loader.load().tiers["1"]).toEqual(["changed"]);
       expect(loader.load().qualityDial.default).toBe(5);
       expect(loader.load().frontierModel).toBe("frontier");
+      expect(loader.load().targets).toEqual({
+        "openrouter-auto": { model: "openrouter/auto-beta" }
+      });
 
       const noDialPath = join(dir, "routing-no-dial.json");
       writeFileSync(
@@ -126,6 +133,30 @@ describe("routing", () => {
     });
   });
 
+  it("resolves named managed-router targets without changing legacy model entries", () => {
+    const config: RoutingConfig = {
+      tiers: { "0": ["direct-cheap"], "1": ["openrouter-auto", "direct-standard"] },
+      rules: [{ when: "default", tier: 1 }],
+      qualityDial: { default: 5 },
+      frontierModel: "direct-standard",
+      providers: {},
+      targets: {
+        "openrouter-auto": { model: "openrouter/auto-beta" },
+        "openrouter-pareto-code": { model: "openrouter/pareto-code" }
+      }
+    };
+
+    expect(chooseRoute(request({ model: "relay-auto" }), config)).toMatchObject({
+      requestedModel: "relay-auto",
+      routeTarget: "openrouter-auto",
+      routedModel: "openrouter/auto-beta"
+    });
+    expect(chooseRoute(request({ model: "direct-standard" }), config)).toMatchObject({
+      routeTarget: "direct-standard",
+      routedModel: "direct-standard"
+    });
+  });
+
   it("validates malformed routing configs", () => {
     const dir = mkdtempSync(join(tmpdir(), "relay-routing-invalid-"));
     const path = join(dir, "routing.json");
@@ -141,7 +172,12 @@ describe("routing", () => {
         { tiers: { "0": ["model"] }, rules: [{ when: "default" }] },
         { tiers: { "0": ["model"] }, rules: [{ when: "unknown", tier: 0 }] },
         { tiers: { "0": ["model"] }, rules: [{ when: "promptTokens > nope", tier: 0 }] },
-        { tiers: { "0": ["model"] }, rules: [{ when: "requestedModel contains 'x'", tier: 0 }] }
+        { tiers: { "0": ["model"] }, rules: [{ when: "requestedModel contains 'x'", tier: 0 }] },
+        { tiers: { "0": ["target"] }, rules: [{ when: "default", tier: 0 }], targets: [] },
+        { tiers: { "0": ["target"] }, rules: [{ when: "default", tier: 0 }], targets: { target: null } },
+        { tiers: { "0": ["target"] }, rules: [{ when: "default", tier: 0 }], targets: { target: [] } },
+        { tiers: { "0": ["target"] }, rules: [{ when: "default", tier: 0 }], targets: { target: "model" } },
+        { tiers: { "0": ["target"] }, rules: [{ when: "default", tier: 0 }], targets: { target: {} } }
       ]) {
         writeFileSync(path, JSON.stringify(invalid));
         expect(() => createRoutingConfigLoader(path).load()).toThrow();

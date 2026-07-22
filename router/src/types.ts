@@ -117,6 +117,7 @@ export type OpenAIToolChoice =
 
 export type OpenAIChatCompletionRequest = {
   model: string;
+  session_id?: string;
   messages: OpenAIMessage[];
   max_tokens?: number;
   metadata?: JsonObject;
@@ -174,5 +175,6 @@ export type OpenAIChatCompletionChunk = {
     prompt_tokens?: number;
     completion_tokens?: number;
     total_tokens?: number;
+    cost?: number;
   } | null;
 };

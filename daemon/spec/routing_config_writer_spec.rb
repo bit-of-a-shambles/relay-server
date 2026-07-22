@@ -68,14 +68,18 @@ RSpec.describe RelayDaemon::RoutingConfigWriter do
   describe "#config" do
     it "keeps base tier order when there is no outcome data" do
       writer = described_class.new(eval_store, min_samples: 1)
-      expect(writer.config["tiers"]["1"]).to eq(["openai/gpt-5.5", "x-ai/grok-4.5", "z-ai/glm-5.2"])
+      expect(writer.config["tiers"]["1"]).to eq(
+        ["openai/gpt-5.5", "x-ai/grok-4.5", "z-ai/glm-5.2", "openrouter-auto"]
+      )
     end
 
     it "reorders a tier so the higher-passing model is routed first" do
       record(model: "openai/gpt-5.5",     passed: 1, failed: 1) # 0.5
       record(model: "x-ai/grok-4.5", passed: 2, failed: 0) # 1.0
       writer = described_class.new(eval_store, min_samples: 1)
-      expect(writer.config["tiers"]["1"]).to eq(["x-ai/grok-4.5", "openai/gpt-5.5", "z-ai/glm-5.2"])
+      expect(writer.config["tiers"]["1"]).to eq(
+        ["x-ai/grok-4.5", "openai/gpt-5.5", "z-ai/glm-5.2", "openrouter-auto"]
+      )
     end
 
     it "floats a model with enough samples ahead of one below the threshold" do
@@ -83,14 +87,18 @@ RSpec.describe RelayDaemon::RoutingConfigWriter do
       record(model: "openai/gpt-5.5",     passed: 1, failed: 0) # 1 sample
       writer = described_class.new(eval_store, min_samples: 2)
       # OpenAI has too few samples to score, so Grok (scored) leads.
-      expect(writer.config["tiers"]["1"]).to eq(["x-ai/grok-4.5", "openai/gpt-5.5", "z-ai/glm-5.2"])
+      expect(writer.config["tiers"]["1"]).to eq(
+        ["x-ai/grok-4.5", "openai/gpt-5.5", "z-ai/glm-5.2", "openrouter-auto"]
+      )
     end
 
     it "ignores models with no test results yet" do
       session_id = insert_session
       insert_call(model: "x-ai/grok-4.5", session_id: session_id, created_at: Time.now.utc.iso8601)
       writer = described_class.new(eval_store, min_samples: 1)
-      expect(writer.config["tiers"]["1"]).to eq(["openai/gpt-5.5", "x-ai/grok-4.5", "z-ai/glm-5.2"])
+      expect(writer.config["tiers"]["1"]).to eq(
+        ["openai/gpt-5.5", "x-ai/grok-4.5", "z-ai/glm-5.2", "openrouter-auto"]
+      )
     end
 
     it "preserves rules, quality dial, and frontier model" do
@@ -98,6 +106,10 @@ RSpec.describe RelayDaemon::RoutingConfigWriter do
       expect(cfg["rules"]).to include({ "when" => "default", "tier" => 1 })
       expect(cfg["qualityDial"]).to eq("default" => 5)
       expect(cfg["frontierModel"]).to eq("openai/gpt-5.6-sol")
+      expect(cfg["targets"]).to include(
+        "openrouter-auto" => { "model" => "openrouter/auto-beta" },
+        "openrouter-pareto-code" => { "model" => "openrouter/pareto-code" }
+      )
     end
 
     it "defaults providers to an empty hash when no provider store is configured" do

@@ -8,15 +8,17 @@ describe("OpenAI SSE to Anthropic SSE translation", () => {
       'data: {"id":"chatcmpl_1","model":"openrouter/test","choices":[{"index":0,"delta":{"role":"assistant"}}]}',
       'data: {"choices":[{"index":0,"delta":{"content":"Hello"}}]}',
       'data: {"choices":[{"index":0,"delta":{"content":" world"}}]}',
-      'data: {"choices":[{"index":0,"finish_reason":"stop","delta":{}}],"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}}',
+      'data: {"choices":[{"index":0,"finish_reason":"stop","delta":{}}],"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10,"cost":0.002}}',
       "data: [DONE]",
       ""
     ].join("\n\n");
 
     const events: string[] = [];
+    let summary: unknown;
     for await (const event of openAIStreamToAnthropicSse(
       streamFromString(upstream),
-      "fallback/model"
+      "fallback/model",
+      (value) => { summary = value; }
     )) {
       events.push(event);
     }
@@ -29,6 +31,12 @@ describe("OpenAI SSE to Anthropic SSE translation", () => {
     expect(output).toContain('"stop_reason":"end_turn"');
     expect(output).toContain('"output_tokens":3');
     expect(output).toContain("event: message_stop");
+    expect(summary).toEqual({
+      model: "openrouter/test",
+      promptTokens: 7,
+      completionTokens: 3,
+      costUsd: 0.002
+    });
   });
 
   it("streams tool calls as Anthropic tool_use blocks", async () => {

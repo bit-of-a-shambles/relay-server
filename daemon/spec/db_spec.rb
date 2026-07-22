@@ -92,7 +92,7 @@ RSpec.describe RelayDaemon::Db do
         "id", "task_id", "requested_model", "routed_model", "tier",
         "prompt_tokens", "completion_tokens", "cost_usd", "frontier_cost_usd",
         "latency_ms", "escalation_reason", "status", "error_message", "created_at",
-        "session_id"
+        "session_id", "run_id", "route_target"
       )
     end
 

@@ -345,7 +345,7 @@ RSpec.describe RelayDaemon::SessionRunner do
 
     expect(File.read(File.join(worktree_path, "env_session_id.txt"))).to eq(session["id"])
     expect(File.read(File.join(worktree_path, "env_anthropic_base.txt")))
-      .to eq("http://127.0.0.1:7778/api/session/#{session["id"]}")
+      .to match(%r{\Ahttp://127\.0\.0\.1:7778/api/session/#{session["id"]}/run/[0-9a-f-]+\z})
   end
 
   it "suffixes the routing base url with /escalated when escalated is true" do
@@ -362,7 +362,7 @@ RSpec.describe RelayDaemon::SessionRunner do
     ).join
 
     expect(File.read(File.join(worktree_path, "env_anthropic_base.txt")))
-      .to eq("http://127.0.0.1:7778/api/session/#{session["id"]}/escalated")
+      .to match(%r{\Ahttp://127\.0\.0\.1:7778/api/session/#{session["id"]}/run/[0-9a-f-]+/escalated\z})
   end
 
   it "stores a fallback assistant message when the agent produces no output" do

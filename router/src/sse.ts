@@ -39,11 +39,20 @@ type StreamState = {
   finishReason: string | null;
   promptTokens: number;
   completionTokens: number;
+  costUsd: number | null;
+};
+
+export type StreamSummary = {
+  model: string;
+  promptTokens: number;
+  completionTokens: number;
+  costUsd: number | null;
 };
 
 export async function* openAIStreamToAnthropicSse(
   stream: ReadableStream<Uint8Array>,
-  fallbackModel: string
+  fallbackModel: string,
+  onComplete?: (summary: StreamSummary) => void
 ): AsyncGenerator<string> {
   const state: StreamState = {
     messageStarted: false,
@@ -54,7 +63,8 @@ export async function* openAIStreamToAnthropicSse(
     toolBlocks: new Map<number, OpenToolBlock>(),
     finishReason: null,
     promptTokens: 0,
-    completionTokens: 0
+    completionTokens: 0,
+    costUsd: null
   };
 
   for await (const message of parseSse(stream)) {
@@ -98,6 +108,13 @@ export async function* openAIStreamToAnthropicSse(
       }
     }
   }
+
+  onComplete?.({
+    model: state.model,
+    promptTokens: state.promptTokens,
+    completionTokens: state.completionTokens,
+    costUsd: state.costUsd
+  });
 
   yield* stopOpenBlocks(state);
   yield sse("message_delta", {
@@ -244,6 +261,7 @@ function updateUsage(state: StreamState, chunk: OpenAIChatCompletionChunk): void
 
   state.promptTokens = chunk.usage.prompt_tokens ?? state.promptTokens;
   state.completionTokens = chunk.usage.completion_tokens ?? state.completionTokens;
+  state.costUsd = chunk.usage.cost ?? state.costUsd;
 }
 
 function* ensureMessageStarted(state: StreamState): Generator<string> {

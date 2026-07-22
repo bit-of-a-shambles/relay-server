@@ -128,13 +128,14 @@ async function handleRequest(
       anthropicRequest,
       route,
       options,
-      fetchImpl
+      fetchImpl,
+      attribution
     );
     const latencyMs = Date.now() - upstreamResponse.startedAt;
 
     if (!upstreamResponse.response.ok) {
       const errorMessage = await readUpstreamError(upstreamResponse.response);
-      await recordCall(options.callLogSink, route, latencyMs, 0, null, "error", errorMessage, attribution);
+      await recordCall(options.callLogSink, route, route.routedModel, latencyMs, 0, null, "error", errorMessage, attribution);
       sendJson(response, upstreamResponse.response.status, {
         type: "error",
         error: {
@@ -145,14 +146,24 @@ async function handleRequest(
       return;
     }
 
-    await recordCall(options.callLogSink, route, latencyMs, 0, null, "success", null, attribution);
-
     if (upstreamResponse.response.body === null) {
+      const errorMessage = "OpenRouter returned an empty stream";
+      await recordCall(
+        options.callLogSink,
+        route,
+        route.routedModel,
+        latencyMs,
+        0,
+        null,
+        "error",
+        errorMessage,
+        attribution
+      );
       sendJson(response, 502, {
         type: "error",
         error: {
           type: "api_error",
-          message: "OpenRouter returned an empty stream"
+          message: errorMessage
         }
       });
       return;
@@ -164,13 +175,32 @@ async function handleRequest(
       Connection: "keep-alive"
     });
 
+    let actualModel = route.routedModel;
+    let completionTokens = 0;
+    let costUsd: number | null = null;
     for await (const event of openAIStreamToAnthropicSse(
       upstreamResponse.response.body,
-      route.routedModel
+      route.routedModel,
+      (summary) => {
+        actualModel = summary.model;
+        completionTokens = summary.completionTokens;
+        costUsd = summary.costUsd;
+      }
     )) {
       response.write(event);
     }
 
+    await recordCall(
+      options.callLogSink,
+      route,
+      actualModel,
+      Date.now() - upstreamResponse.startedAt,
+      completionTokens,
+      costUsd,
+      "success",
+      null,
+      attribution
+    );
     response.end();
     return;
   }
@@ -216,6 +246,7 @@ type NonStreamingResult =
 
 type CallAttribution = {
   sessionId: string | null;
+  runId: string | null;
   escalated: boolean;
 };
 
@@ -238,14 +269,14 @@ async function executeNonStreamingWithRetry(
   let lastError = "OpenRouter request failed";
 
   for (const route of uniqueRoutes(attempts)) {
-    const attempt = await callUpstream(anthropicRequest, route, options, fetchImpl);
+    const attempt = await callUpstream(anthropicRequest, route, options, fetchImpl, attribution);
     const latencyMs = Date.now() - attempt.startedAt;
 
     if (!attempt.response.ok) {
       const errorMessage = await readUpstreamError(attempt.response);
       lastStatus = attempt.response.status;
       lastError = errorMessage;
-      await recordCall(options.callLogSink, route, latencyMs, 0, null, "error", errorMessage, attribution);
+      await recordCall(options.callLogSink, route, route.routedModel, latencyMs, 0, null, "error", errorMessage, attribution);
       continue;
     }
 
@@ -256,6 +287,7 @@ async function executeNonStreamingWithRetry(
       await recordCall(
         options.callLogSink,
         route,
+        openAIResponse.model,
         latencyMs,
         completionTokens,
         extractOpenRouterCostUsd(upstreamJson),
@@ -267,7 +299,7 @@ async function executeNonStreamingWithRetry(
     } catch (error: unknown) {
       lastStatus = 502;
       lastError = error instanceof Error ? error.message : "Invalid OpenRouter response";
-      await recordCall(options.callLogSink, route, latencyMs, 0, null, "error", lastError, attribution);
+      await recordCall(options.callLogSink, route, route.routedModel, latencyMs, 0, null, "error", lastError, attribution);
     }
   }
 
@@ -290,7 +322,8 @@ async function callUpstream(
   anthropicRequest: AnthropicMessagesRequest,
   route: RoutingDecision,
   options: RouterServerOptions,
-  fetchImpl: typeof fetch
+  fetchImpl: typeof fetch,
+  attribution: CallAttribution
 ): Promise<UpstreamAttempt> {
   const startedAt = Date.now();
   const isOpenRouter = providerNameFor(route.routedModel) === OPENROUTER_PROVIDER_NAME;
@@ -302,6 +335,9 @@ async function callUpstream(
     model: upstream.model,
     maxCompletionTokens: options.maxCompletionTokens
   });
+  if (isOpenRouter && attribution.sessionId !== null) {
+    openAIRequest.session_id = attribution.sessionId;
+  }
 
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (upstream.apiKey !== undefined && upstream.apiKey.length > 0) {
@@ -329,6 +365,7 @@ async function readUpstreamError(response: Response): Promise<string> {
 async function recordCall(
   sink: CallLogSink | undefined,
   route: RoutingDecision,
+  actualModel: string,
   latencyMs: number,
   completionTokens: number,
   costUsd: number | null,
@@ -342,8 +379,10 @@ async function recordCall(
 
   await sink.record({
     sessionId: attribution.sessionId,
+    runId: attribution.runId,
     requestedModel: route.requestedModel,
-    routedModel: route.routedModel,
+    routeTarget: route.routeTarget,
+    routedModel: actualModel,
     provider: providerNameFor(route.routedModel),
     tier: route.tier,
     promptTokens: route.promptTokens,
@@ -377,17 +416,35 @@ function extractOpenRouterCostUsd(value: unknown): number | null {
 
 function matchMessagesPath(pathname: string): CallAttribution | null {
   if (pathname === "/api/v1/messages") {
-    return { sessionId: null, escalated: false };
+    return { sessionId: null, runId: null, escalated: false };
+  }
+
+  const runEscalatedMatch = /^\/api\/session\/([^/]+)\/run\/([^/]+)\/escalated\/v1\/messages$/.exec(pathname);
+  if (runEscalatedMatch !== null) {
+    return {
+      sessionId: decodeURIComponent(runEscalatedMatch[1] as string),
+      runId: decodeURIComponent(runEscalatedMatch[2] as string),
+      escalated: true
+    };
+  }
+
+  const runMatch = /^\/api\/session\/([^/]+)\/run\/([^/]+)\/v1\/messages$/.exec(pathname);
+  if (runMatch !== null) {
+    return {
+      sessionId: decodeURIComponent(runMatch[1] as string),
+      runId: decodeURIComponent(runMatch[2] as string),
+      escalated: false
+    };
   }
 
   const escalatedMatch = /^\/api\/session\/([^/]+)\/escalated\/v1\/messages$/.exec(pathname);
   if (escalatedMatch !== null) {
-    return { sessionId: decodeURIComponent(escalatedMatch[1] as string), escalated: true };
+    return { sessionId: decodeURIComponent(escalatedMatch[1] as string), runId: null, escalated: true };
   }
 
   const match = /^\/api\/session\/([^/]+)\/v1\/messages$/.exec(pathname);
   if (match !== null) {
-    return { sessionId: decodeURIComponent(match[1] as string), escalated: false };
+    return { sessionId: decodeURIComponent(match[1] as string), runId: null, escalated: false };
   }
 
   return null;

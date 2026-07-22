@@ -26,6 +26,9 @@ repository retains the iOS client and full pre-split history.
 - M80: installed daemons generate private router call-record credentials and
   default routing/sink paths, expose effective capabilities, and permanently
   honor per-test routing-learning opt-outs.
+- M81: explicit Relay Auto, named direct/OpenRouter managed targets, sticky
+  OpenRouter sessions, and separate run/selected-target/actual-model
+  attribution for streaming and non-streaming calls.
 
 See `docs/AGENT_PLAYBOOK.md` for exact milestone contracts and validation.
 Numbering is inherited from the private repository; gaps are private or
@@ -33,8 +36,8 @@ iOS-only milestones.
 
 ## Next Recommended Work
 
-- M81: hybrid direct/OpenRouter routing targets with exact run, selected
-  target, and actual serving-model attribution.
+- M82: private seed evals and deterministic, budget-capped model admission;
+  the private fixture corpus remains outside this public repository.
 - M60: notarized menubar cask, blocked until a Developer ID Application
   certificate and private key are installed on the release Mac.
 - M70: provision APNs/Cloudflare secrets and run the end-to-end push check

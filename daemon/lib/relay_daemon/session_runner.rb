@@ -146,7 +146,7 @@ module RelayDaemon
         argv = agent_command.is_a?(Array) ? agent_command : build_argv(agent_command, content, session_id: session_id, resume: resume)
         run_env = agent_env.merge("RELAY_SESSION_ID" => session_id)
         if router_base_url
-          base = "#{router_base_url.delete_suffix("/")}/session/#{session_id}"
+          base = "#{router_base_url.delete_suffix("/")}/session/#{session_id}/run/#{run_id}"
           base += "/escalated" if escalated
           run_env["ANTHROPIC_BASE_URL"] = base
         end
