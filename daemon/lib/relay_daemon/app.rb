@@ -135,6 +135,19 @@ module RelayDaemon
       next if request.path_info.start_with?("/pair/")
 
       static_token = settings.relay_config.daemon_token
+      if request.path_info.start_with?("/internal/")
+        internal_token = settings.relay_config.internal_token || static_token
+        auth_header = env["HTTP_AUTHORIZATION"] || ""
+        bearer = auth_header.sub(/\ABearer\s+/, "")
+        internal_ok = !internal_token.nil? && !internal_token.empty? &&
+          Rack::Utils.secure_compare(internal_token, bearer)
+        unless internal_ok
+          content_type :json
+          halt 401, JSON.generate({ error: "unauthorized" })
+        end
+        next
+      end
+
       pairing      = settings.pairing_service
       has_static   = !static_token.nil? && !static_token.empty?
 
@@ -158,7 +171,19 @@ module RelayDaemon
 
     get "/healthz" do
       content_type :json
-      JSON.generate({ status: "ok", version: "0.1.0" })
+      config = settings.relay_config
+      routing_learning = !config.routing_config_path.nil? && !config.internal_token.nil?
+      push_notifications = !config.push_relay_url.nil? && !config.push_relay_token.nil?
+      JSON.generate(
+        {
+          status: "ok",
+          version: "0.1.0",
+          capabilities: {
+            routingLearning: routing_learning,
+            pushNotifications: push_notifications
+          }
+        }
+      )
     end
 
     get "/whoami" do
@@ -696,7 +721,11 @@ module RelayDaemon
         test_command = repo["testCommand"]
         test_store = RelayDaemon::SessionTestStore.new(db, session_store)
         if test_command.nil? || test_command.empty?
-          test_store.record(session_id: session["id"], tests_passed: nil)
+          test_store.record(
+            session_id: session["id"],
+            tests_passed: nil,
+            learn_from_outcome: learn_from_outcome
+          )
           settings.push_notifier&.notify(RelayDaemon::PushNotifier::TESTS_FINISHED)
           result = { "testsPassed" => nil }
         else
@@ -706,7 +735,11 @@ module RelayDaemon
                               chdir: File.join(settings.relay_config.worktrees_dir, session["id"]))
           _, test_status = Process.wait2(pid)
           tests_passed = test_status.success?
-          test_store.record(session_id: session["id"], tests_passed: tests_passed)
+          test_store.record(
+            session_id: session["id"],
+            tests_passed: tests_passed,
+            learn_from_outcome: learn_from_outcome
+          )
           settings.push_notifier&.notify(RelayDaemon::PushNotifier::TESTS_FINISHED)
           result = { "testsPassed" => tests_passed }
 

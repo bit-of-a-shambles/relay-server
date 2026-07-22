@@ -48,13 +48,16 @@ bundle exec rspec
 | `RELAY_DAEMON_HOST` | `127.0.0.1` | Bind address |
 | `RELAY_DAEMON_PORT` | `7777` | Listen port |
 | `RELAY_DAEMON_TOKEN` | unset | Static bearer token for dev/tests |
+| `RELAY_INTERNAL_TOKEN` | generated | Private router-to-daemon call-record token |
 | `RELAY_DB_PATH` | `~/.relay/relay.sqlite3` | SQLite database path |
 | `RELAY_WORKTREES_DIR` | `~/.relay/worktrees` | Session worktree root |
 | `RELAY_AGENT_LOG_DIR` | `~/.relay/runs` | Session run/test log root |
 | `RELAY_AGENT_COMMAND` | unset | Agent command template; `{prompt}` becomes one argv element |
 | `RELAY_CLAUDE_STREAMING` | `1` | Set `0` to disable Claude partial-message output; custom agents are unaffected |
 | `RELAY_ROUTER_BASE_URL` | unset | Router base URL, usually `http://127.0.0.1:7778/api` |
-| `RELAY_ROUTING_CONFIG` | unset | Routing config path the daemon may rewrite from eval outcomes |
+| `RELAY_ROUTING_CONFIG` | `~/.relay/routing.json` | Routing config path the daemon may rewrite from eval outcomes |
+| `RELAY_LLM_CALL_SINK_URL` | loopback daemon `/internal/llm-calls` | Router call-record destination |
+| `RELAY_LLM_CALL_SINK_TOKEN` | internal token | Bearer token for router call records |
 | `RELAY_PUSH_RELAY_URL` | unset | Push Worker HTTPS URL with exact `/push` path; requires relay token |
 | `RELAY_PUSH_RELAY_TOKEN` | unset | Bearer secret matching Worker `RELAY_SHARED_SECRET`; never logged |
 | `RELAY_PUSH_ENVIRONMENT` | `production` | APNs environment: `production` or `sandbox` |

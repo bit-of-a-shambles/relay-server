@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 2026-07-13.
+Last updated: 2026-07-22.
 
 This repository is the public, MIT-licensed extraction of Relay's router,
 daemon, menubar companion, release tooling, site, and push relay. The private
@@ -23,6 +23,9 @@ repository retains the iOS client and full pre-split history.
 - M68: authenticated and idempotent device registration plus a bounded daemon
   push queue. Tokens are validated/canonicalized; delivery uses native HTTP
   timeouts within a monotonic event budget; failures never block daemon work.
+- M80: installed daemons generate private router call-record credentials and
+  default routing/sink paths, expose effective capabilities, and permanently
+  honor per-test routing-learning opt-outs.
 
 See `docs/AGENT_PLAYBOOK.md` for exact milestone contracts and validation.
 Numbering is inherited from the private repository; gaps are private or
@@ -30,6 +33,8 @@ iOS-only milestones.
 
 ## Next Recommended Work
 
+- M81: hybrid direct/OpenRouter routing targets with exact run, selected
+  target, and actual serving-model attribution.
 - M60: notarized menubar cask, blocked until a Developer ID Application
   certificate and private key are installed on the release Mac.
 - M70: provision APNs/Cloudflare secrets and run the end-to-end push check
