@@ -75,10 +75,12 @@ Claude Code session flags:
 If `RELAY_ROUTER_BASE_URL` is configured, the daemon sets:
 
 ```text
-ANTHROPIC_BASE_URL=<router-base>/session/<session-id>
+ANTHROPIC_BASE_URL=<router-base>/session/<session-id>/run/<run-id>
 ```
 
-so model calls are attributed to `llm_calls.session_id`.
+so model calls are attributed to both `llm_calls.session_id` and
+`llm_calls.run_id`. `route_target` records Relay's selected direct or managed
+target, while `routed_model` records the actual model reported upstream.
 
 ## API
 

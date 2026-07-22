@@ -2,7 +2,9 @@ import { appendFileSync } from "node:fs";
 
 export type LlmCallRecord = {
   sessionId: string | null;
+  runId: string | null;
   requestedModel: string;
+  routeTarget: string;
   routedModel: string;
   provider: string;
   tier: number;

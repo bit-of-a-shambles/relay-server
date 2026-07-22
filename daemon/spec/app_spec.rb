@@ -174,7 +174,9 @@ RSpec.describe RelayDaemon::App do
 
     let(:valid_body) do
       {
+        runId: "run-123",
         requestedModel: "deepseek-flash",
+        routeTarget: "openrouter-auto",
         routedModel: "openai/gpt-5.5",
         provider: "openrouter",
         tier: 1,
@@ -253,9 +255,14 @@ RSpec.describe RelayDaemon::App do
 
         post_call(valid_body.merge(sessionId: session["id"]))
 
-        row = db.connection.execute("SELECT task_id, session_id FROM llm_calls ORDER BY id DESC LIMIT 1").first
+        row = db.connection.execute(
+          "SELECT task_id, session_id, run_id, route_target, routed_model FROM llm_calls ORDER BY id DESC LIMIT 1"
+        ).first
         expect(row["task_id"]).to be_nil
         expect(row["session_id"]).to eq(session["id"])
+        expect(row["run_id"]).to eq("run-123")
+        expect(row["route_target"]).to eq("openrouter-auto")
+        expect(row["routed_model"]).to eq("openai/gpt-5.5")
       end
     end
 
@@ -285,6 +292,17 @@ RSpec.describe RelayDaemon::App do
 
         row = db.connection.execute("SELECT provider FROM llm_calls ORDER BY id DESC LIMIT 1").first
         expect(row["provider"]).to be_nil
+      end
+
+      it "uses routedModel as the route target for an older payload" do
+        post_call(valid_body.except(:routeTarget, :runId))
+        expect(last_response.status).to eq(201)
+
+        row = db.connection.execute(
+          "SELECT run_id, route_target FROM llm_calls ORDER BY id DESC LIMIT 1"
+        ).first
+        expect(row["run_id"]).to be_nil
+        expect(row["route_target"]).to eq("openai/gpt-5.5")
       end
     end
 

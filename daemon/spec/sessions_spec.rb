@@ -556,6 +556,18 @@ RSpec.describe "Sessions API" do
       expect(messages.last["content"]).to include("model=x-ai/grok-4.5")
     end
 
+    it "passes relay-auto when the client does not override the model" do
+      session = create_session
+
+      post "/sessions/#{session["id"]}/messages",
+           { content: "hello auto" }.to_json,
+           { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+      expect(last_response.status).to eq(202)
+
+      messages = wait_for_messages(session["id"], 2)
+      expect(messages.last["content"]).to include("model=relay-auto")
+    end
+
     it "returns validation and not-found errors" do
       session = create_session
 
@@ -678,7 +690,7 @@ RSpec.describe "Sessions API" do
       expect(messages.last["content"]).to include("mode=resume")
 
       expect(File.read(File.join(worktrees_dir, session["id"], "env_anthropic_base.txt")))
-        .to end_with("/session/#{session["id"]}/escalated")
+        .to match(%r{/session/#{session["id"]}/run/[0-9a-f-]+/escalated\z})
       expect(events.map { |event| event["type"] }).to include("message.created", "agent.event")
       updates = events.select { |event| event["type"] == "session.updated" }
       expect(updates.length).to be >= 2

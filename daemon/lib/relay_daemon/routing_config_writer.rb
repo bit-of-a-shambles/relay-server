@@ -23,8 +23,8 @@ module RelayDaemon
     DEFAULT_BASE_CONFIG = T.let(
       {
         "tiers" => {
-          "0" => ["deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-pro"],
-          "1" => ["openai/gpt-5.5", "x-ai/grok-4.5", "z-ai/glm-5.2"],
+          "0" => ["deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-pro", "openrouter-pareto-code"],
+          "1" => ["openai/gpt-5.5", "x-ai/grok-4.5", "z-ai/glm-5.2", "openrouter-auto"],
           "2" => ["openai/gpt-5.6-terra", "openai/gpt-5.6-luna"],
           "3" => ["openai/gpt-5.6-sol", "anthropic/claude-fable-5"]
         },
@@ -36,6 +36,10 @@ module RelayDaemon
         ],
         "qualityDial" => { "default" => 5 },
         "frontierModel" => "openai/gpt-5.6-sol",
+        "targets" => {
+          "openrouter-auto" => { "model" => "openrouter/auto-beta" },
+          "openrouter-pareto-code" => { "model" => "openrouter/pareto-code" }
+        },
         "providers" => {}
       }.freeze,
       T::Hash[String, T.untyped]

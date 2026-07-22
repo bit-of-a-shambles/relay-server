@@ -17,7 +17,12 @@ RSpec.describe RelayDaemon::ModelCatalog do
       expect(result["source"]).to eq("default")
       expect(result["frontierModel"]).to eq("openai/gpt-5.6-sol")
       expect(result["tiers"].map { |t| t["tier"] }).to eq([0, 1, 2, 3])
-      expect(result["tiers"].first).to eq({ "tier" => 0, "models" => ["deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-pro"] })
+      expect(result["tiers"].first).to eq(
+        {
+          "tier" => 0,
+          "models" => ["deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-pro", "openrouter-pareto-code"]
+        }
+      )
       expect(result["custom"]).to eq([])
     end
 
@@ -102,7 +107,9 @@ RSpec.describe RelayDaemon::ModelCatalog do
         tier1 = result["tiers"].find { |t| t["tier"] == 1 }
         # Grok has a measured 100% pass rate, so it is reordered to the
         # front of tier 1. Unscored GLM stays after the base-order models.
-        expect(tier1["models"]).to eq(["x-ai/grok-4.5", "openai/gpt-5.5", "z-ai/glm-5.2"])
+        expect(tier1["models"]).to eq(
+          ["x-ai/grok-4.5", "openai/gpt-5.5", "z-ai/glm-5.2", "openrouter-auto"]
+        )
       ensure
         db.connection.close
       end
@@ -199,7 +206,9 @@ RSpec.describe "GET /models via app" do
       body = JSON.parse(last_response.body)
       expect(body["source"]).to eq("file")
       tier1 = body["tiers"].find { |t| t["tier"] == 1 }
-      expect(tier1["models"]).to eq(["x-ai/grok-4.5", "openai/gpt-5.5", "z-ai/glm-5.2"])
+      expect(tier1["models"]).to eq(
+        ["x-ai/grok-4.5", "openai/gpt-5.5", "z-ai/glm-5.2", "openrouter-auto"]
+      )
     ensure
       db.connection.close
     end

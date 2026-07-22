@@ -23,15 +23,15 @@ module RelayDaemon
     sig { returns(T::Array[T::Hash[Symbol, T.untyped]]) }
     def model_outcomes
       sql = <<~SQL
-        SELECT routed_model                                                        AS model,
+        SELECT route_target                                                        AS model,
                COUNT(*)                                                            AS calls,
                COUNT(DISTINCT outcome_id)                                          AS outcomes,
                COUNT(DISTINCT CASE WHEN tests_passed IS NOT NULL THEN outcome_id END) AS outcomes_with_tests,
                COUNT(DISTINCT CASE WHEN tests_passed = 1 THEN outcome_id END)      AS outcomes_passed,
                COALESCE(SUM(COALESCE(cost_usd, 0)), 0)                             AS spend_usd
         FROM eval_dataset
-        GROUP BY routed_model
-        ORDER BY routed_model
+        GROUP BY route_target
+        ORDER BY route_target
       SQL
 
       @db.connection.execute(sql).map do |row|

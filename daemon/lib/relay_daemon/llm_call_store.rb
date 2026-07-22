@@ -29,15 +29,17 @@ module RelayDaemon
       @db.connection.execute(
         <<~SQL,
           INSERT INTO llm_calls
-            (task_id, session_id, requested_model, routed_model, provider, tier,
+            (task_id, session_id, run_id, requested_model, route_target, routed_model, provider, tier,
              prompt_tokens, completion_tokens, cost_usd, frontier_cost_usd,
              latency_ms, escalation_reason, status, error_message, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         SQL
         [
           nil,
           data["sessionId"],
+          data["runId"],
           data["requestedModel"],
+          data["routeTarget"] || data["routedModel"],
           data["routedModel"],
           data["provider"],
           data["tier"].to_i,

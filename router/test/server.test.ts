@@ -86,7 +86,7 @@ describe("Relay router HTTP server", () => {
     });
   });
 
-  it("stamps task and session ids from scoped message routes onto call records", async () => {
+  it("stamps session and run ids, sends stickiness, and records the actual serving model", async () => {
     const sink = new MemoryCallLogSink();
     const upstream = await createTestServer((request, response) => {
       response.writeHead(200, { "Content-Type": "application/json" });
@@ -118,7 +118,7 @@ describe("Relay router HTTP server", () => {
         messages: [{ role: "user", content: "hi" }]
       })
     });
-    const sessionResponse = await fetch(`${router.baseUrl}/api/session/session-xyz-789/v1/messages`, {
+    const sessionResponse = await fetch(`${router.baseUrl}/api/session/session-xyz-789/run/run-456/v1/messages`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -127,12 +127,31 @@ describe("Relay router HTTP server", () => {
         messages: [{ role: "user", content: "hi again" }]
       })
     });
+    const legacySessionResponse = await fetch(`${router.baseUrl}/api/session/session-legacy/v1/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-5",
+        max_tokens: 50,
+        messages: [{ role: "user", content: "legacy" }]
+      })
+    });
 
     expect(taskResponse.status).toBe(404);
     expect(sessionResponse.status).toBe(200);
-    expect(sink.records).toHaveLength(1);
-    expect(sink.records[0]?.sessionId).toBe("session-xyz-789");
-    expect(sink.records[0]?.provider).toBe("openrouter");
+    expect(legacySessionResponse.status).toBe(200);
+    expect(sink.records).toHaveLength(2);
+    expect(sink.records[0]).toMatchObject({
+      sessionId: "session-xyz-789",
+      runId: "run-456",
+      routeTarget: "openai/gpt-5.5",
+      routedModel: "openrouter/test",
+      provider: "openrouter"
+    });
+    expect(JSON.parse(upstream.requests[0]?.body ?? "{}")).toMatchObject({
+      session_id: "session-xyz-789"
+    });
+    expect(sink.records[1]).toMatchObject({ sessionId: "session-legacy", runId: null });
   });
 
   it("routes escalated session messages one tier up with test_failure_retry", async () => {
@@ -159,7 +178,7 @@ describe("Relay router HTTP server", () => {
     openServers.push(router);
 
     const escalatedResponse = await fetch(
-      `${router.baseUrl}/api/session/session-escalated-1/escalated/v1/messages`,
+      `${router.baseUrl}/api/session/session-escalated-1/run/run-escalated/escalated/v1/messages`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -170,18 +189,38 @@ describe("Relay router HTTP server", () => {
         })
       }
     );
+    const legacyEscalatedResponse = await fetch(
+      `${router.baseUrl}/api/session/session-escalated-legacy/escalated/v1/messages`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-5",
+          max_tokens: 50,
+          messages: [{ role: "user", content: "legacy retry" }]
+        })
+      }
+    );
 
     expect(escalatedResponse.status).toBe(200);
+    expect(legacyEscalatedResponse.status).toBe(200);
     expect(upstream.requests.map((request) => JSON.parse(request.body).model)).toEqual([
+      "openai/gpt-5.6-terra",
       "openai/gpt-5.6-terra"
     ]);
-    expect(sink.records).toHaveLength(1);
+    expect(sink.records).toHaveLength(2);
     expect(sink.records[0]).toMatchObject({
       sessionId: "session-escalated-1",
+      runId: "run-escalated",
       requestedModel: "claude-sonnet-4-5",
       routedModel: "openai/gpt-5.6-terra",
       provider: "openrouter",
       tier: 2,
+      escalationReason: "test_failure_retry"
+    });
+    expect(sink.records[1]).toMatchObject({
+      sessionId: "session-escalated-legacy",
+      runId: null,
       escalationReason: "test_failure_retry"
     });
   });
@@ -259,7 +298,8 @@ describe("Relay router HTTP server", () => {
     });
     expect(sink.records[1]).toMatchObject({
       requestedModel: "claude-sonnet-4-5",
-      routedModel: "openai/gpt-5.6-sol",
+      routeTarget: "openai/gpt-5.6-sol",
+      routedModel: "openai/gpt-5.6-terra",
       provider: "openrouter",
       tier: 3,
       escalationReason: "upstream_error_retry",
@@ -459,7 +499,8 @@ describe("Relay router HTTP server", () => {
     expect(sink.records).toHaveLength(1);
     expect(sink.records[0]).toMatchObject({
       requestedModel: "myvllm::qwen3-32b",
-      routedModel: "myvllm::qwen3-32b",
+      routeTarget: "myvllm::qwen3-32b",
+      routedModel: "qwen3-32b",
       provider: "myvllm"
     });
   });
@@ -508,6 +549,7 @@ describe("Relay router HTTP server", () => {
     expect(sink.records).toHaveLength(1);
     expect(sink.records[0]).toMatchObject({
       requestedModel: "myvllm::qwen3-32b",
+      routeTarget: "myvllm::qwen3-32b",
       routedModel: "myvllm::qwen3-32b",
       provider: "myvllm"
     });
@@ -517,7 +559,12 @@ describe("Relay router HTTP server", () => {
     const successSink = new MemoryCallLogSink();
     const upstream = await createTestServer((request, response) => {
       response.writeHead(200, { "Content-Type": "text/event-stream" });
-      response.end("data: [DONE]\n\n");
+      response.end([
+        'data: {"id":"stream","model":"anthropic/claude-sonnet-4.6","choices":[{"index":0,"delta":{"content":"ok"}}]}',
+        'data: {"choices":[{"index":0,"finish_reason":"stop","delta":{}}],"usage":{"prompt_tokens":8,"completion_tokens":2,"cost":0.004}}',
+        "data: [DONE]",
+        ""
+      ].join("\n\n"));
     });
     openServers.push(upstream);
 
@@ -538,11 +585,15 @@ describe("Relay router HTTP server", () => {
       })
     });
     expect(response.status).toBe(200);
+    await response.text();
     expect(successSink.records).toHaveLength(1);
     expect(successSink.records[0]).toMatchObject({
       status: "success",
-      routedModel: "openai/gpt-5.5",
-      provider: "openrouter"
+      routeTarget: "openai/gpt-5.5",
+      routedModel: "anthropic/claude-sonnet-4.6",
+      provider: "openrouter",
+      completionTokens: 2,
+      costUsd: 0.004
     });
 
     const failureSink = new MemoryCallLogSink();
@@ -706,8 +757,10 @@ describe("Relay router HTTP server", () => {
   });
 
   it("handles empty streams, invalid upstream JSON, and thrown non-error values", async () => {
+    const emptyStreamSink = new MemoryCallLogSink();
     const emptyStreamRouter = await listenRouterWithOptions({
-      fetchImpl: async () => new Response(null, { status: 200 })
+      fetchImpl: async () => new Response(null, { status: 200 }),
+      callLogSink: emptyStreamSink
     });
     openServers.push(emptyStreamRouter);
 
@@ -724,6 +777,11 @@ describe("Relay router HTTP server", () => {
     expect(emptyStreamResponse.status).toBe(502);
     await expect(emptyStreamResponse.json()).resolves.toMatchObject({
       error: { message: "OpenRouter returned an empty stream" }
+    });
+    expect(emptyStreamSink.records).toHaveLength(1);
+    expect(emptyStreamSink.records[0]).toMatchObject({
+      status: "error",
+      errorMessage: "OpenRouter returned an empty stream"
     });
 
     const invalidJsonRouter = await listenRouterWithOptions({

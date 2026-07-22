@@ -12,6 +12,10 @@ export type ProviderConfig = {
   apiKeyEnv?: string;
 };
 
+export type RoutingTarget = {
+  model: string;
+};
+
 export type RoutingConfig = {
   tiers: Record<string, string[]>;
   rules: RoutingRule[];
@@ -20,6 +24,7 @@ export type RoutingConfig = {
   };
   frontierModel: string;
   providers: Record<string, ProviderConfig>;
+  targets?: Record<string, RoutingTarget>;
 };
 
 // Field names deliberately mirror RouterServerOptions (server.ts) so callers
@@ -42,6 +47,7 @@ const PROVIDER_NAME_PATTERN = /^[a-z0-9_-]+$/;
 
 export type RoutingDecision = {
   requestedModel: string;
+  routeTarget: string;
   routedModel: string;
   tier: number;
   promptTokens: number;
@@ -60,8 +66,8 @@ export type RoutingConfigLoader = {
 // when changing either.
 export const DEFAULT_ROUTING_CONFIG: RoutingConfig = {
   tiers: {
-    "0": ["deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-pro"],
-    "1": ["openai/gpt-5.5", "x-ai/grok-4.5", "z-ai/glm-5.2"],
+    "0": ["deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-pro", "openrouter-pareto-code"],
+    "1": ["openai/gpt-5.5", "x-ai/grok-4.5", "z-ai/glm-5.2", "openrouter-auto"],
     "2": ["openai/gpt-5.6-terra", "openai/gpt-5.6-luna"],
     "3": ["openai/gpt-5.6-sol", "anthropic/claude-fable-5"]
   },
@@ -75,7 +81,11 @@ export const DEFAULT_ROUTING_CONFIG: RoutingConfig = {
     default: 5
   },
   frontierModel: "openai/gpt-5.6-sol",
-  providers: {}
+  providers: {},
+  targets: {
+    "openrouter-auto": { model: "openrouter/auto-beta" },
+    "openrouter-pareto-code": { model: "openrouter/pareto-code" }
+  }
 };
 
 export function createRoutingConfigLoader(path: string | undefined): RoutingConfigLoader {
@@ -114,12 +124,13 @@ export function chooseRoute(
 ): RoutingDecision {
   const promptTokens = estimatePromptTokens(request);
   const qualityDial = readQualityDial(request.metadata, config.qualityDial.default);
-  const requestedTier = findExactModelTier(request.model, config);
-  if (requestedTier !== null) {
+  const requestedRoute = findExactRoute(request.model, config);
+  if (requestedRoute !== null) {
     return {
       requestedModel: request.model,
-      routedModel: request.model,
-      tier: requestedTier,
+      routeTarget: requestedRoute.routeTarget,
+      routedModel: resolveTargetModel(requestedRoute.routeTarget, config),
+      tier: requestedRoute.tier,
       promptTokens,
       qualityDial,
       frontierModel: config.frontierModel,
@@ -130,6 +141,7 @@ export function chooseRoute(
   if (request.model.includes("::")) {
     return {
       requestedModel: request.model,
+      routeTarget: request.model,
       routedModel: request.model,
       tier: findDefaultRuleTier(config.rules),
       promptTokens,
@@ -144,10 +156,12 @@ export function chooseRoute(
     baseTier + Math.round((qualityDial - 5) / 3) + (escalationReason === null ? 0 : 1),
     config
   );
-  const routedModel = firstModelForTier(config, tier);
+  const routeTarget = firstModelForTier(config, tier);
+  const routedModel = resolveTargetModel(routeTarget, config);
 
   return {
     requestedModel: request.model,
+    routeTarget,
     routedModel,
     tier,
     promptTokens,
@@ -207,14 +221,38 @@ function parseRoutingConfig(value: unknown): RoutingConfig {
       ? record.frontierModel
       : firstModelForTier({ tiers }, maxTier(tiers));
   const providers = parseProviders(record.providers);
+  const targets = parseTargets(record.targets);
 
   return {
     tiers,
     rules,
     qualityDial: { default: defaultDial },
     frontierModel,
-    providers
+    providers,
+    targets
   };
+}
+
+function parseTargets(value: unknown): Record<string, RoutingTarget> {
+  if (value === undefined) {
+    return {};
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("Invalid routing config targets");
+  }
+
+  const targets: Record<string, RoutingTarget> = {};
+  for (const [name, rawTarget] of Object.entries(value)) {
+    if (typeof rawTarget !== "object" || rawTarget === null || Array.isArray(rawTarget)) {
+      throw new Error(`Invalid routing config target '${name}'`);
+    }
+    const model = (rawTarget as Record<string, unknown>).model;
+    if (typeof model !== "string" || model.length === 0) {
+      throw new Error(`Invalid routing config target model for '${name}'`);
+    }
+    targets[name] = { model };
+  }
+  return targets;
 }
 
 function parseProviders(value: unknown): Record<string, ProviderConfig> {
@@ -352,13 +390,25 @@ function findDefaultRuleTier(rules: RoutingRule[]): number {
   return defaultRule.tier;
 }
 
-function findExactModelTier(model: string, config: Pick<RoutingConfig, "tiers">): number | null {
+function findExactRoute(
+  model: string,
+  config: Pick<RoutingConfig, "tiers" | "targets">
+): { tier: number; routeTarget: string } | null {
   for (const [tier, models] of Object.entries(config.tiers)) {
-    if (models.includes(model)) {
-      return Number(tier);
+    for (const routeTarget of models) {
+      if (routeTarget === model || config.targets?.[routeTarget]?.model === model) {
+        return { tier: Number(tier), routeTarget };
+      }
     }
   }
   return null;
+}
+
+function resolveTargetModel(
+  routeTarget: string,
+  config: Pick<RoutingConfig, "targets">
+): string {
+  return config.targets?.[routeTarget]?.model ?? routeTarget;
 }
 
 function estimatePromptTokens(request: AnthropicMessagesRequest): number {

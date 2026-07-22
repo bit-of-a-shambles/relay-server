@@ -641,7 +641,7 @@ module RelayDaemon
         agent_argv = RelayDaemon::SessionRunner.enable_claude_streaming(
           agent_argv, enabled: settings.relay_config.claude_streaming
         )
-        agent_argv += ["--model", model_override] if model_override
+        agent_argv += ["--model", model_override || "relay-auto"]
 
         RelayDaemon::SessionRunner.run_async(
           session_id: session["id"],
@@ -770,6 +770,7 @@ module RelayDaemon
             agent_argv = RelayDaemon::SessionRunner.enable_claude_streaming(
               agent_argv, enabled: settings.relay_config.claude_streaming
             )
+            agent_argv += ["--model", "relay-auto"]
 
             RelayDaemon::SessionRunner.run_async(
               session_id: session["id"],
