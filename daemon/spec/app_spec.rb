@@ -26,6 +26,8 @@ RSpec.describe RelayDaemon::App do
     )
   end
 
+  let(:internal_token) { "router-internal-token" }
+
   before do
     described_class.set(:relay_config, config)
   end
@@ -43,9 +45,41 @@ RSpec.describe RelayDaemon::App do
       expect(last_response.content_type).to include("application/json")
     end
 
-    it "returns status ok and version" do
+    it "returns status, version, and disabled optional capabilities" do
       body = JSON.parse(last_response.body)
-      expect(body).to eq({ "status" => "ok", "version" => "0.1.0" })
+      expect(body).to eq(
+        {
+          "status" => "ok",
+          "version" => "0.1.0",
+          "capabilities" => {
+            "routingLearning" => false,
+            "pushNotifications" => false
+          }
+        }
+      )
+    end
+
+    context "when optional services are configured" do
+      let(:config) do
+        RelayDaemon::Config.new(
+          daemon_token: token,
+          internal_token: internal_token,
+          host: "127.0.0.1",
+          port: 7777,
+          db_path: "/tmp/relay_test.db",
+          routing_config_path: "/tmp/routing.json",
+          push_relay_url: "https://push.example.test/push",
+          push_relay_token: "push-token"
+        )
+      end
+
+      it "reports enabled routing learning and push notifications" do
+        body = JSON.parse(last_response.body)
+        expect(body.fetch("capabilities")).to eq(
+          "routingLearning" => true,
+          "pushNotifications" => true
+        )
+      end
     end
   end
 
@@ -167,6 +201,26 @@ RSpec.describe RelayDaemon::App do
            body.to_json,
            { "CONTENT_TYPE" => "application/json",
              "HTTP_AUTHORIZATION" => "Bearer #{token}" }.merge(headers)
+    end
+
+    context "with a dedicated internal token configured" do
+      let(:config) do
+        RelayDaemon::Config.new(
+          daemon_token: token,
+          internal_token: internal_token,
+          host: "127.0.0.1",
+          port: 7777,
+          db_path: "/tmp/relay_test.db"
+        )
+      end
+
+      it "accepts the internal token and rejects the client token" do
+        post_call(valid_body, "HTTP_AUTHORIZATION" => "Bearer #{internal_token}")
+        expect(last_response.status).to eq(201)
+
+        post_call(valid_body)
+        expect(last_response.status).to eq(401)
+      end
     end
 
     context "with a valid record" do

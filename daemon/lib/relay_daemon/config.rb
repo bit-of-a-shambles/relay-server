@@ -18,6 +18,7 @@ module RelayDaemon
     PUSH_ENVIRONMENTS = T.let(["production", "sandbox"].freeze, T::Array[String])
 
     const :daemon_token, T.nilable(String)
+    const :internal_token, T.nilable(String), default: nil
     const :host, String
     const :port, Integer
     const :db_path, String
@@ -42,6 +43,7 @@ module RelayDaemon
 
       new(
         daemon_token: ENV["RELAY_DAEMON_TOKEN"],
+        internal_token: ENV["RELAY_INTERNAL_TOKEN"],
         host: T.must(ENV.fetch("RELAY_DAEMON_HOST", "127.0.0.1")),
         port: ENV.fetch("RELAY_DAEMON_PORT", "7777").to_i,
         db_path: T.must(ENV.fetch("RELAY_DB_PATH", File.expand_path("~/.relay/relay.sqlite3"))),

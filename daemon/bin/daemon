@@ -10,8 +10,10 @@ require "relay_daemon/config"
 require "relay_daemon/db"
 require "relay_daemon/pairing_service"
 require "relay_daemon/router_supervisor"
+require "relay_daemon/runtime_environment"
 
 if __FILE__ == $PROGRAM_NAME
+  ENV.replace(RelayDaemon::RuntimeEnvironment.prepare(ENV.to_h))
   config = RelayDaemon::Config.from_env
 
   case ARGV[0]

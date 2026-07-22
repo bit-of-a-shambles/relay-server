@@ -47,10 +47,10 @@ RSpec.describe RelayDaemon::EvalStore do
     )
   end
 
-  def insert_session_test(session_id:, tests_passed:, created_at:)
+  def insert_session_test(session_id:, tests_passed:, created_at:, learn_from_outcome: true)
     db.connection.execute(
-      "INSERT INTO session_test_runs (session_id, tests_passed, created_at) VALUES (?, ?, ?)",
-      [session_id, tests_passed, created_at]
+      "INSERT INTO session_test_runs (session_id, tests_passed, learn_from_outcome, created_at) VALUES (?, ?, ?, ?)",
+      [session_id, tests_passed, learn_from_outcome ? 1 : 0, created_at]
     )
   end
 
@@ -152,6 +152,28 @@ RSpec.describe RelayDaemon::EvalStore do
       expect(row[:outcomesPassed]).to eq(1)
       expect(row[:passRate]).to eq(0.5)
       expect(row[:spendUsd]).to be_within(0.0001).of(0.003)
+    end
+
+    it "permanently excludes a call whose first later test opted out" do
+      session = insert_session(id: "session-eval-opt-out")
+      insert_session_call(model: "openai/gpt-5.5", session_id: session, created_at: "2026-07-01T10:00:00Z")
+      insert_session_test(
+        session_id: session,
+        tests_passed: 1,
+        learn_from_outcome: false,
+        created_at: "2026-07-01T10:01:00Z"
+      )
+      insert_session_test(
+        session_id: session,
+        tests_passed: 1,
+        learn_from_outcome: true,
+        created_at: "2026-07-01T10:02:00Z"
+      )
+
+      expect(db.connection.get_first_value(
+        "SELECT COUNT(*) FROM eval_dataset WHERE session_id = ?", [session]
+      )).to eq(0)
+      expect(store.model_outcomes).to eq([])
     end
   end
 end

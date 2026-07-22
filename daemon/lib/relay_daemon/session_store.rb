@@ -251,17 +251,26 @@ module RelayDaemon
     end
 
     sig do
-      params(session_id: String, tests_passed: T.nilable(T::Boolean))
+      params(
+        session_id: String,
+        tests_passed: T.nilable(T::Boolean),
+        learn_from_outcome: T::Boolean
+      )
         .returns(T::Hash[String, T.untyped])
     end
-    def record(session_id:, tests_passed:)
+    def record(session_id:, tests_passed:, learn_from_outcome: true)
       raise ArgumentError, "session not found" unless @session_store.find(session_id)
 
       now = Time.now.utc.iso8601
       @db.connection.execute(
-        "INSERT INTO session_test_runs (session_id, tests_passed, created_at)
-         VALUES (?, ?, ?)",
-        [session_id, tests_passed.nil? ? nil : (tests_passed ? 1 : 0), now]
+        "INSERT INTO session_test_runs (session_id, tests_passed, learn_from_outcome, created_at)
+         VALUES (?, ?, ?, ?)",
+        [
+          session_id,
+          tests_passed.nil? ? nil : (tests_passed ? 1 : 0),
+          learn_from_outcome ? 1 : 0,
+          now
+        ]
       )
       T.must(find(@db.connection.last_insert_row_id))
     end
@@ -269,7 +278,8 @@ module RelayDaemon
     sig { params(id: Integer).returns(T.nilable(T::Hash[String, T.untyped])) }
     def find(id)
       row = @db.connection.get_first_row(
-        "SELECT id, session_id, tests_passed, created_at FROM session_test_runs WHERE id = ?",
+        "SELECT id, session_id, tests_passed, learn_from_outcome, created_at
+         FROM session_test_runs WHERE id = ?",
         [id]
       )
       row ? row_to_h(row) : nil
@@ -283,6 +293,7 @@ module RelayDaemon
         "id" => row["id"],
         "sessionId" => row["session_id"],
         "testsPassed" => row["tests_passed"].nil? ? nil : row["tests_passed"] == 1,
+        "learnFromOutcome" => row["learn_from_outcome"] == 1,
         "createdAt" => row["created_at"]
       }
     end

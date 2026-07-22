@@ -139,9 +139,13 @@ RSpec.describe RelayDaemon::SessionTestStore do
 
   after { db.connection.close }
 
-  it "records passed, failed, and unconfigured session test results" do
-    expect(test_store.record(session_id: session["id"], tests_passed: true))
-      .to include("sessionId" => session["id"], "testsPassed" => true)
+  it "records passed, failed, and unconfigured session test results with learning intent" do
+    expect(test_store.record(session_id: session["id"], tests_passed: true, learn_from_outcome: false))
+      .to include(
+        "sessionId" => session["id"],
+        "testsPassed" => true,
+        "learnFromOutcome" => false
+      )
     expect(test_store.record(session_id: session["id"], tests_passed: false)["testsPassed"])
       .to be false
     expect(test_store.record(session_id: session["id"], tests_passed: nil)["testsPassed"])

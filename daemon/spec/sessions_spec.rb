@@ -744,6 +744,11 @@ RSpec.describe "Sessions API" do
 
       expect(last_response.status).to eq(200)
       expect(File.read(routing_config_path)).to eq("unchanged")
+      row = db.connection.get_first_row(
+        "SELECT learn_from_outcome FROM session_test_runs WHERE session_id = ? ORDER BY id DESC LIMIT 1",
+        [session["id"]]
+      )
+      expect(row["learn_from_outcome"]).to eq(0)
     end
 
     it "returns action errors" do

@@ -16,6 +16,7 @@ RSpec.describe RelayDaemon::Config do
       ENV.delete("RELAY_PUSH_RELAY_TOKEN")
       ENV.delete("RELAY_PUSH_ENVIRONMENT")
       ENV.delete("RELAY_CLAUDE_STREAMING")
+      ENV.delete("RELAY_INTERNAL_TOKEN")
       ENV["RELAY_DAEMON_TOKEN"] = "t"
       example.run
       ENV.replace(saved)
@@ -44,6 +45,11 @@ RSpec.describe RelayDaemon::Config do
     it "reads router_dir from RELAY_ROUTER_DIR" do
       ENV["RELAY_ROUTER_DIR"] = "/custom/router/path"
       expect(described_class.from_env.router_dir).to eq("/custom/router/path")
+    end
+
+    it "reads the private router-to-daemon token" do
+      ENV["RELAY_INTERNAL_TOKEN"] = "internal-only"
+      expect(described_class.from_env.internal_token).to eq("internal-only")
     end
 
     it "parses RELAY_ROUTER_COMMAND as a JSON array" do

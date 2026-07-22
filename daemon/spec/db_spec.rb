@@ -119,7 +119,9 @@ RSpec.describe RelayDaemon::Db do
       cols = db.connection
                .execute("PRAGMA table_info(session_test_runs)")
                .map { |r| r["name"] }
-      expect(cols).to include("id", "session_id", "tests_passed", "created_at")
+      expect(cols).to include(
+        "id", "session_id", "tests_passed", "learn_from_outcome", "created_at"
+      )
     end
 
     it "push_devices table has the expected columns and uniqueness" do
