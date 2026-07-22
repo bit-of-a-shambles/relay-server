@@ -53,7 +53,8 @@ RSpec.describe RelayDaemon::App do
           "version" => "0.1.0",
           "capabilities" => {
             "routingLearning" => false,
-            "pushNotifications" => false
+            "pushNotifications" => false,
+            "routingSummaries" => true
           }
         }
       )
@@ -77,7 +78,8 @@ RSpec.describe RelayDaemon::App do
         body = JSON.parse(last_response.body)
         expect(body.fetch("capabilities")).to eq(
           "routingLearning" => true,
-          "pushNotifications" => true
+          "pushNotifications" => true,
+          "routingSummaries" => true
         )
       end
     end
