@@ -17,6 +17,7 @@ require_relative "pairing_service"
 require_relative "provider_store"
 require_relative "push_device_store"
 require_relative "push_notifier"
+require_relative "routing_summary_store"
 require_relative "repo_store"
 require_relative "eval_store"
 require_relative "routing_config_writer"
@@ -180,7 +181,8 @@ module RelayDaemon
           version: "0.1.0",
           capabilities: {
             routingLearning: routing_learning,
-            pushNotifications: push_notifications
+            pushNotifications: push_notifications,
+            routingSummaries: true
           }
         }
       )
@@ -587,6 +589,19 @@ module RelayDaemon
       halt 503, JSON.generate({ error: "database not configured" }) if db.nil?
 
       JSON.generate(RelayDaemon::MessageStore.new(db, session_store).list_for_session(params[:id]))
+    end
+
+    get "/sessions/:id/routing-summaries" do
+      content_type :json
+
+      session_store = settings.session_store
+      halt 503, JSON.generate({ error: "session store not configured" }) if session_store.nil?
+      halt 404, JSON.generate({ error: "not found" }) if session_store.find(params[:id]).nil?
+
+      db = settings.stats_db
+      halt 503, JSON.generate({ error: "database not configured" }) if db.nil?
+
+      JSON.generate(RelayDaemon::RoutingSummaryStore.new(db).list_for_session(params[:id]))
     end
 
     post "/sessions/:id/messages" do

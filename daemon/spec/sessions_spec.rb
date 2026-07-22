@@ -132,6 +132,48 @@ RSpec.describe "Sessions API" do
     end
   end
 
+  describe "GET /sessions/:id/routing-summaries" do
+    it "requires authentication" do
+      get "/sessions/missing/routing-summaries"
+
+      expect(last_response.status).to eq(401)
+    end
+
+    it "returns run-scoped routing summaries for the session" do
+      session = create_session
+      db.connection.execute(
+        <<~SQL,
+          INSERT INTO llm_calls
+            (session_id, run_id, requested_model, route_target, routed_model, tier,
+             prompt_tokens, completion_tokens, cost_usd, frontier_cost_usd,
+             latency_ms, status, created_at)
+          VALUES (?, 'run-1', 'relay-auto', 'openrouter-auto', 'openai/gpt-5.5',
+                  1, 10, 5, 0.02, 0.03, 100, 'success', ?)
+        SQL
+        [session["id"], Time.now.utc.iso8601]
+      )
+
+      get "/sessions/#{session['id']}/routing-summaries", {}, auth_headers
+
+      expect(last_response.status).to eq(200)
+      expect(JSON.parse(last_response.body)).to eq(
+        [
+          {
+            "runId" => "run-1", "isAuto" => true,
+            "routeTargets" => ["openrouter-auto"], "actualModels" => ["openai/gpt-5.5"],
+            "callCount" => 1, "costUsd" => 0.02, "escalated" => false
+          }
+        ]
+      )
+    end
+
+    it "returns not found for another session id" do
+      get "/sessions/missing/routing-summaries", {}, auth_headers
+
+      expect(last_response.status).to eq(404)
+    end
+  end
+
   describe "multi-thread session lifecycle" do
     def post_repo_session(repo_id, body = {})
       post "/repos/#{repo_id}/sessions", body.to_json,
