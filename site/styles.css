@@ -50,8 +50,8 @@ a:hover { color: #d5ffa0; }
   gap: 24px;
 }
 
-.wordmark { color: var(--ink); text-decoration: none; font-weight: 800; letter-spacing: 0; }
-.wordmark-mark { margin-right: 9px; vertical-align: -7px; border-radius: 6px; }
+.wordmark { color: var(--ink); text-decoration: none; font-weight: 800; letter-spacing: 0; display: inline-flex; align-items: center; }
+.wordmark-mark { margin-right: 9px; border-radius: 6px; }
 .nav-links { display: flex; flex-wrap: wrap; gap: 20px; font-size: .93rem; }
 .nav-links a { color: var(--soft); text-decoration: none; }
 .nav-links a:hover { color: var(--accent); }
