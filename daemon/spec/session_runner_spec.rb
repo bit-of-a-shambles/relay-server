@@ -58,6 +58,29 @@ RSpec.describe RelayDaemon::SessionRunner do
 
   after { db.connection.close }
 
+  it "retains the router alias diagnostic in logs without publishing a model failure" do
+    warning = '[claude-code:unrecognized_model] {"model":"relay-auto","query_source":"sdk"}'
+    events = []
+    event_bus.subscribe { |event| events << event }
+    described_class.run_async(session_id: session["id"], content: "Hi", worktree_path: worktree_path,
+      sessions_log_dir: sessions_log_dir, db_path: db_path, event_bus: event_bus,
+      agent_command: ["ruby", "-e", "warn #{warning.inspect}; puts 'Hello'"]).join
+    expect(message_store.list_for_session(session["id"]).last["content"]).to eq("Hello")
+    expect(events.select { |e| e["type"] == "agent.event" }.map { |e| e["payload"]["line"] }).to eq(["Hello"])
+    expect(File.read(Dir.glob(File.join(sessions_log_dir, session["id"], "runs", "*.log")).first)).to include(warning)
+    expect(described_class.send(:publish_agent_line?, warning.sub("relay-auto", "invalid-model"))).to be true
+  end
+
+  it "normalizes genuine terminal model errors even when result text is absent" do
+    event = { "type" => "result", "is_error" => true, "errors" => ["Invalid model: missing-model", ""] }
+    expect(described_class.send(:parse_agent_line, JSON.generate(event))).to eq(
+      "kind" => "final_result", "text" => "Agent failed: Invalid model: missing-model")
+    event["errors"] = [nil, ""]
+    expect(described_class.send(:parse_agent_line, JSON.generate(event))).to eq("kind" => "protocol")
+    event["errors"] = "invalid"
+    expect(described_class.send(:parse_agent_line, JSON.generate(event))).to eq("kind" => "protocol")
+  end
+
   def run_message(content)
     described_class.run_async(
       session_id: session["id"],
@@ -525,6 +548,234 @@ RSpec.describe RelayDaemon::SessionRunner do
     expect(described_class.running?(session["id"])).to be false
     http.release << true
     expect(notifier.shutdown(timeout: 1.0)).to be true
+  end
+
+  it "closes the child's stdin instead of inheriting the daemon's own stdin" do
+    described_class.run_async(
+      session_id: session["id"],
+      content: "stdin check",
+      worktree_path: worktree_path,
+      sessions_log_dir: sessions_log_dir,
+      agent_command: ["ruby", "-e", "print STDIN.read.length"],
+      db_path: db_path,
+      event_bus: event_bus,
+      run_id: "stdin-eof-run"
+    ).join
+
+    message = message_store.list_for_session(session["id"]).last
+    expect(message["content"]).to eq("0")
+  end
+
+  it "kills a hung agent process after the run timeout and reports a clear status" do
+    described_class.run_async(
+      session_id: session["id"],
+      content: "hang please",
+      worktree_path: worktree_path,
+      sessions_log_dir: sessions_log_dir,
+      agent_command: ["ruby", "-e", "sleep 5"],
+      db_path: db_path,
+      event_bus: event_bus,
+      run_id: "hang-run",
+      run_timeout_seconds: 0.1,
+      kill_grace_seconds: 0.1
+    ).join
+
+    message = message_store.list_for_session(session["id"]).last
+    expect(message["content"]).to eq(
+      "Relay stopped this run after 0.1s with no response — the agent may be " \
+      "stuck or waiting on a prompt Relay can't answer automatically."
+    )
+  end
+
+  it "stops a running agent process on request and reports a clear status" do
+    started_path = File.join(Dir.mktmpdir, "started")
+    thread = described_class.run_async(
+      session_id: session["id"],
+      content: "stop me",
+      worktree_path: worktree_path,
+      sessions_log_dir: sessions_log_dir,
+      agent_command: ["ruby", "-e", "File.write(#{started_path.inspect}, 'started'); sleep 5"],
+      db_path: db_path,
+      event_bus: event_bus,
+      run_id: "stop-run"
+    )
+    Timeout.timeout(2) { Thread.pass until File.exist?(started_path) }
+
+    expect(described_class.stop(session["id"])).to be true
+    thread.join
+
+    message = message_store.list_for_session(session["id"]).last
+    expect(message["content"]).to eq("Stopped — this run was cancelled from the app.")
+  end
+
+  it "returns false from stop when there is no run in progress for that session" do
+    expect(described_class.stop("no-such-session-id")).to be false
+  end
+
+  it "escalates a stop to SIGKILL when the agent process ignores SIGTERM" do
+    started_path = File.join(Dir.mktmpdir, "started")
+    thread = described_class.run_async(
+      session_id: session["id"],
+      content: "stop me but ignore term",
+      worktree_path: worktree_path,
+      sessions_log_dir: sessions_log_dir,
+      agent_command: ["ruby", "-e", "Signal.trap('TERM') {}; File.write(#{started_path.inspect}, 'started'); sleep 5"],
+      db_path: db_path,
+      event_bus: event_bus,
+      run_id: "stop-ignore-term-run"
+    )
+    Timeout.timeout(2) { Thread.pass until File.exist?(started_path) }
+
+    expect(described_class.stop(session["id"], kill_grace_seconds: 0.2)).to be true
+    thread.join
+
+    message = message_store.list_for_session(session["id"]).last
+    expect(message["content"]).to eq("Stopped — this run was cancelled from the app.")
+  end
+
+  it "escalates to SIGKILL when a hung agent process ignores SIGTERM" do
+    described_class.run_async(
+      session_id: session["id"],
+      content: "ignore term",
+      worktree_path: worktree_path,
+      sessions_log_dir: sessions_log_dir,
+      agent_command: ["ruby", "-e", "Signal.trap('TERM') {}; sleep 5"],
+      db_path: db_path,
+      event_bus: event_bus,
+      run_id: "ignore-term-run",
+      run_timeout_seconds: 0.5,
+      kill_grace_seconds: 0.2
+    ).join
+
+    message = message_store.list_for_session(session["id"]).last
+    expect(message["content"]).to eq(
+      "Relay stopped this run after 0.5s with no response — the agent may be " \
+      "stuck or waiting on a prompt Relay can't answer automatically."
+    )
+  end
+
+  it "keeps an actively streaming run alive past the run timeout" do
+    script_dir = Dir.mktmpdir
+    script = File.join(script_dir, "agent.sh")
+    # A line every 0.1s for ~0.6s total: longer than the 0.3s run timeout, but
+    # never silent for 0.3s, so the idle watchdog must let the run finish.
+    # Use the system shell so cold Ruby startup cannot consume the silence
+    # budget before the streaming fixture has started under simulator load.
+    File.write(script, <<~'SH')
+      for fixture_index in 0 1 2 3 4 5; do
+        printf 'line %s\n' "$fixture_index"
+        /bin/sleep 0.1
+      done
+    SH
+    described_class.run_async(
+      session_id: session["id"],
+      content: "keep working",
+      worktree_path: worktree_path,
+      sessions_log_dir: sessions_log_dir,
+      agent_command: ["/bin/sh", script],
+      db_path: db_path,
+      event_bus: event_bus,
+      run_id: "active-run",
+      run_timeout_seconds: 0.3,
+      kill_grace_seconds: 0.2
+    ).join
+
+    message = message_store.list_for_session(session["id"]).last
+    expect(message["content"]).to eq("line 0\nline 1\nline 2\nline 3\nline 4\nline 5")
+  end
+
+  it "times out after the agent goes silent, even if it streamed earlier" do
+    described_class.run_async(
+      session_id: session["id"],
+      content: "go quiet",
+      worktree_path: worktree_path,
+      sessions_log_dir: sessions_log_dir,
+      agent_command: ["ruby", "-e", "STDOUT.sync = true; STDOUT.write(\"started\\n\"); sleep 5"],
+      db_path: db_path,
+      event_bus: event_bus,
+      run_id: "quiet-run",
+      run_timeout_seconds: 0.3,
+      kill_grace_seconds: 0.1
+    ).join
+
+    message = message_store.list_for_session(session["id"]).last
+    expect(message["content"]).to eq(
+      "Relay stopped this run after 0.3s with no response — the agent may be " \
+      "stuck or waiting on a prompt Relay can't answer automatically."
+    )
+  end
+
+  it "joins multiple final-assistant text blocks with the spacing they need" do
+    output = JSON.generate(
+      "type" => "assistant",
+      "message" => {
+        "content" => [
+          { "type" => "text", "text" => "Hello." },
+          { "type" => "text", "text" => "World" }
+        ]
+      }
+    ) + "\n"
+
+    run_agent_output(output, content: "spacing", run_id: "spacing-run", stream_json: true)
+
+    expect(message_store.list_for_session(session["id"]).last["content"]).to eq("Hello. World")
+  end
+
+  it "does not double-space final-assistant text blocks that already carry their own spacing" do
+    output = JSON.generate(
+      "type" => "assistant",
+      "message" => {
+        "content" => [
+          { "type" => "text", "text" => "Hello." },
+          { "type" => "text", "text" => " World" }
+        ]
+      }
+    ) + "\n"
+
+    run_agent_output(output, content: "no-double-space", run_id: "no-double-space-run", stream_json: true)
+
+    expect(message_store.list_for_session(session["id"]).last["content"]).to eq("Hello. World")
+  end
+
+  it "sets RELAY_AGENT_RUN_ID alongside RELAY_SESSION_ID for the agent process" do
+    described_class.run_async(
+      session_id: session["id"],
+      content: "run id please",
+      worktree_path: worktree_path,
+      sessions_log_dir: sessions_log_dir,
+      agent_command: [
+        "ruby", "-e",
+        'File.write("env_run_id.txt", ENV["RELAY_AGENT_RUN_ID"].to_s)'
+      ],
+      db_path: db_path,
+      event_bus: event_bus,
+      run_id: "explicit-run-id"
+    ).join
+
+    expect(File.read(File.join(worktree_path, "env_run_id.txt"))).to eq("explicit-run-id")
+  end
+
+  it "only appends --settings to Claude commands when enabling the permission hook" do
+    expect(
+      described_class.enable_permission_hook(["claude", "-p", "hi"], settings_path: "/tmp/hook.json")
+    ).to eq(["claude", "-p", "hi", "--settings", "/tmp/hook.json"])
+    expect(
+      described_class.enable_permission_hook(["custom-agent", "-p", "hi"], settings_path: "/tmp/hook.json")
+    ).to eq(["custom-agent", "-p", "hi"])
+  end
+
+  it "writes a PreToolUse settings file pointing at the permission hook script" do
+    path = File.join(Dir.mktmpdir, "nested", "hook.json")
+
+    described_class.write_permission_hook_settings!(path)
+
+    settings = JSON.parse(File.read(path))
+    hook_entry = settings.dig("hooks", "PreToolUse", 0)
+    expect(hook_entry["matcher"]).to eq("Bash")
+    expect(hook_entry["hooks"].first).to eq(
+      "type" => "command",
+      "command" => "ruby #{described_class::PERMISSION_HOOK_SCRIPT_PATH}"
+    )
   end
 
   it "builds argv with resume flags" do

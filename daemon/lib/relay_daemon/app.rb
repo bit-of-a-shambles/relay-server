@@ -5,7 +5,10 @@ require "sinatra/base"
 require "fileutils"
 require "json"
 require "securerandom"
+require "rbconfig"
 require_relative "config"
+require_relative "harness_catalog"
+require_relative "inference_job_store"
 require_relative "db"
 require_relative "event_bus"
 require_relative "file_browser"
@@ -15,6 +18,7 @@ require_relative "bind_safety"
 require_relative "model_catalog"
 require_relative "pairing_service"
 require_relative "provider_store"
+require_relative "source_catalog"
 require_relative "push_device_store"
 require_relative "push_notifier"
 require_relative "routing_summary_store"
@@ -22,8 +26,11 @@ require_relative "repo_store"
 require_relative "eval_store"
 require_relative "routing_config_writer"
 require_relative "stats"
+require_relative "approval_settings_store"
+require_relative "permission_request_registry"
 require_relative "session_runner"
 require_relative "session_store"
+require_relative "tool_sensitivity_classifier"
 require_relative "ws_handler"
 
 module RelayDaemon
@@ -52,7 +59,10 @@ module RelayDaemon
     set :relay_config, RelayDaemon::Config.from_env
     set :llm_call_store, nil  # nil = disabled; tests and bin/daemon inject a real one
     set :repo_store, nil      # RelayDaemon::RepoStore; tests inject
+    set :source_catalog, nil
     set :provider_store, nil  # RelayDaemon::ProviderStore; tests and bin/daemon inject
+    set :open_router_models, nil # Public catalog; config.ru injects, tests use fixtures.
+    set :harness_catalog, nil
     set :session_store, nil   # RelayDaemon::SessionStore; tests inject
     set :stats_db, nil        # RelayDaemon::Db instance; tests and bin/daemon inject
     set :event_bus, RelayDaemon::EventBus.new
@@ -60,6 +70,9 @@ module RelayDaemon
     set :pairing_service, nil # RelayDaemon::PairingService; tests and bin/daemon inject
     set :push_device_store, nil # RelayDaemon::PushDeviceStore; tests and bin/daemon inject
     set :push_notifier, nil # RelayDaemon::PushNotifier; tests and bin/daemon inject
+    set :approval_settings_store, nil # RelayDaemon::ApprovalSettingsStore; tests and config.ru inject
+    set :permission_request_registry, RelayDaemon::PermissionRequestRegistry.new
+    set :permission_request_timeout_seconds, 60
 
     # Websockets are handled in middleware (before Sinatra) because the
     # hijacked response must reach the server without post-processing.
@@ -95,6 +108,60 @@ module RelayDaemon
         end
       end
 
+      def execution_model(session, override: nil)
+        execution = session.fetch("execution", RelayDaemon::ExecutionConfig::LEGACY)
+        harness, provider = execution.values_at("harnessId", "providerId")
+        unless %w[claude codex copilot gemini omp].include?(harness) && (execution["inferenceMode"] == "realtime" || (harness == "codex" && provider == "doubleword"))
+          halt 503, JSON.generate({ error: "selected execution configuration is not yet supported by this Relay build" })
+        end
+        if %w[codex copilot gemini omp].include?(harness)
+          catalog = settings.harness_catalog
+          available = catalog && catalog.catalog.find { |item| item["id"] == harness && item["status"] == "ready" }
+          halt 503, JSON.generate({ error: "selected harness is not yet supported or available; refresh Mac harnesses" }) unless available
+          mode = settings.approval_settings_store&.mode || "ask_on_sensitive"
+          if harness == "omp"
+            halt 422, JSON.generate({ error: "Oh My Pi RPC requires explicitly selected full_auto permission mode" }) unless mode == "full_auto"
+          end
+          if harness == "gemini"
+            halt 422, JSON.generate({ error: "Gemini supports native Google models only" }) unless provider == "native"
+            halt 422, JSON.generate({ error: "Gemini headless requires explicitly selected full_auto permission mode" }) unless mode == "full_auto"
+          end
+          halt 422, JSON.generate({ error: "#{harness} does not support ask_every_time; choose a supported permission mode" }) if mode == "ask_every_time"
+          halt 422, JSON.generate({ error: "Codex requires native, OpenRouter or Doubleword Responses models" }) if harness == "codex" && !%w[native openrouter doubleword].include?(provider)
+        end
+        model = override || execution["modelId"]
+        return model || "" if provider == "native" && %w[codex copilot gemini omp].include?(harness)
+        if provider == "openrouter"
+          if session["executionExplicit"] && model&.include?("::")
+            halt 422, JSON.generate({ error: "model belongs to a different provider; create a new thread to change source" })
+          end
+          return model || "relay-auto"
+        end
+
+        sources = settings.source_catalog
+        source = sources && sources.catalog.find { |item| item["providerId"] == provider }
+        unless source && %w[ready cached].include?(source["status"])
+          halt 503, JSON.generate({ error: "selected provider is not yet supported or reachable; configure and refresh it on the Mac" })
+        end
+        model ||= source.fetch("models").first
+        halt 422, JSON.generate({ error: "select a model for this provider" }) if model.nil?
+        if model.include?("::") && !model.start_with?("#{provider}::")
+          halt 422, JSON.generate({ error: "model belongs to a different provider" })
+        end
+        model.start_with?("#{provider}::") ? model : "#{provider}::#{model}"
+      end
+
+      def execution_argv(agent_command, session, content, model, resume:, run_id:)
+        if %w[codex copilot gemini omp].include?(session.dig("execution", "harnessId"))
+          executable = settings.harness_catalog.catalog.find { |item| item["id"] == session.dig("execution", "harnessId") }.fetch("path")
+          options = { "executable" => executable, "dbPath" => settings.relay_config.db_path, "sessionId" => session["id"], "content" => content, "model" => model, "sessionDir" => File.join(settings.relay_config.agent_log_dir, "sessions", session["id"], "omp") }
+          return [RbConfig.ruby, File.expand_path("../../bin/harness_bridge", __dir__), JSON.generate(options), "--output-format", "stream-json"]
+        end
+        argv = RelayDaemon::SessionRunner.build_argv(agent_command, content, session_id: session["id"], resume: resume)
+        argv = RelayDaemon::SessionRunner.enable_claude_streaming(argv, enabled: settings.relay_config.claude_streaming)
+        enable_permission_hook(argv, session_id: session["id"], run_id: run_id) + ["--model", model]
+      end
+
       def valid_session_title?(title)
         title.is_a?(String) && !title.strip.empty? && title.strip.length <= RelayDaemon::SessionStore::MAX_TITLE_LENGTH
       end
@@ -115,6 +182,17 @@ module RelayDaemon
       # rates, plus the providers section) so the router's hot-reload picks
       # up provider or test-outcome changes immediately. No-op unless both a
       # routing config path and a database are configured.
+      # Generates the per-run PreToolUse hook settings file and appends
+      # `--settings <path>` to argv, so `claude` calls back into this daemon
+      # for a live permission decision on each Bash tool call (M87).
+      def enable_permission_hook(agent_argv, session_id:, run_id:)
+        path = File.join(
+          settings.relay_config.agent_log_dir, "sessions", session_id, "runs", "#{run_id}-permission-hook.json"
+        )
+        RelayDaemon::SessionRunner.write_permission_hook_settings!(path)
+        RelayDaemon::SessionRunner.enable_permission_hook(agent_argv, settings_path: path)
+      end
+
       def write_routing_config!
         path = settings.relay_config.routing_config_path
         return if path.nil?
@@ -124,7 +202,8 @@ module RelayDaemon
 
         RelayDaemon::RoutingConfigWriter.new(
           RelayDaemon::EvalStore.new(db),
-          provider_store: settings.provider_store
+          provider_store: settings.provider_store,
+          source_catalog: settings.source_catalog
         ).write!(path)
       end
     end
@@ -314,6 +393,67 @@ module RelayDaemon
       JSON.generate({ modelOutcomes: RelayDaemon::EvalStore.new(db).model_outcomes })
     end
 
+    post "/internal/inference-jobs" do
+      content_type :json
+      db = settings.stats_db
+      halt 503, JSON.generate({ error: "database not configured" }) if db.nil?
+      begin
+        data = JSON.parse(request.body.read)
+        job = RelayDaemon::InferenceJobStore.new(db).record(data)
+        settings.event_bus.publish(type: "inference.updated", payload: job)
+        JSON.generate(job)
+      rescue JSON::ParserError
+        halt 400, JSON.generate({ error: "invalid JSON" })
+      rescue ArgumentError, SQLite3::ConstraintException => error
+        halt 422, JSON.generate({ error: error.message })
+      end
+    end
+
+    get "/sessions/:id/inference-jobs" do
+      content_type :json
+      db = settings.stats_db
+      halt 503, JSON.generate({ error: "database not configured" }) if db.nil?
+      halt 404, JSON.generate({ error: "session not found" }) if RelayDaemon::SessionStore.new(db).find(params[:id]).nil?
+      JSON.generate(RelayDaemon::InferenceJobStore.new(db).list(params[:id]))
+    end
+
+    # ----- Installed harnesses -----
+
+    get "/harnesses" do
+      content_type :json
+      catalog = settings.harness_catalog || RelayDaemon::HarnessCatalog.new
+      JSON.generate(catalog.catalog)
+    end
+
+    post "/harnesses/refresh" do
+      content_type :json
+      catalog = settings.harness_catalog || RelayDaemon::HarnessCatalog.new
+      JSON.generate(catalog.catalog(refresh: true))
+    end
+
+    # ----- Execution defaults -----
+
+    get "/execution-defaults" do
+      content_type :json
+      db = settings.stats_db
+      halt 503, JSON.generate({ error: "database not configured" }) if db.nil?
+      JSON.generate(RelayDaemon::ExecutionConfig.new(db).defaults)
+    end
+
+    put "/execution-defaults" do
+      content_type :json
+      db = settings.stats_db
+      halt 503, JSON.generate({ error: "database not configured" }) if db.nil?
+      begin
+        data = JSON.parse(request.body.read)
+        JSON.generate(RelayDaemon::ExecutionConfig.new(db).update_defaults(data))
+      rescue JSON::ParserError
+        halt 400, JSON.generate({ error: "invalid JSON" })
+      rescue ArgumentError => e
+        halt 422, JSON.generate({ error: e.message })
+      end
+    end
+
     # ----- Models -----
 
     # Live routing tiers (from RoutingConfigWriter's output, or the built-in
@@ -322,9 +462,24 @@ module RelayDaemon
       content_type :json
       catalog = RelayDaemon::ModelCatalog.new(
         settings.relay_config.routing_config_path,
-        provider_store: settings.provider_store
+        provider_store: settings.provider_store,
+        open_router_models: settings.open_router_models
       ).catalog
       JSON.generate(catalog)
+    end
+
+    get "/model-sources" do
+      content_type :json
+      catalog = settings.source_catalog
+      halt 503, JSON.generate({ error: "source catalog not configured" }) if catalog.nil?
+      JSON.generate(catalog.catalog)
+    end
+
+    post "/model-sources/refresh" do
+      content_type :json
+      catalog = settings.source_catalog
+      halt 503, JSON.generate({ error: "source catalog not configured" }) if catalog.nil?
+      JSON.generate(catalog.catalog(refresh: true))
     end
 
     # ----- Providers -----
@@ -426,6 +581,37 @@ module RelayDaemon
       ""
     end
 
+    # ----- Approval settings (M87) -----
+
+    get "/settings/approval-mode" do
+      content_type :json
+      store = settings.approval_settings_store
+      halt 503, JSON.generate({ error: "approval settings store not configured" }) if store.nil?
+
+      JSON.generate({ "mode" => store.mode })
+    end
+
+    patch "/settings/approval-mode" do
+      content_type :json
+      store = settings.approval_settings_store
+      halt 503, JSON.generate({ error: "approval settings store not configured" }) if store.nil?
+
+      body_str = request.body.read
+      data = begin
+        JSON.parse(body_str)
+      rescue JSON::ParserError
+        halt 400, JSON.generate({ error: "invalid JSON" })
+      end
+
+      mode = data["mode"] if data.is_a?(Hash)
+      unless mode.is_a?(String) && RelayDaemon::ApprovalSettingsStore::MODES.include?(mode)
+        halt 422, JSON.generate({ error: "mode must be one of #{RelayDaemon::ApprovalSettingsStore::MODES.join(", ")}" })
+      end
+
+      store.update_mode!(mode)
+      JSON.generate({ "mode" => store.mode })
+    end
+
     # ----- Internal call-log ingestion -----
 
     post "/internal/llm-calls" do
@@ -452,6 +638,61 @@ module RelayDaemon
       rescue ArgumentError => e
         halt 422, JSON.generate({ error: e.message })
       end
+    end
+
+    # Called by permission_hook.rb (a PreToolUse hook subprocess of the
+    # spawned agent CLI, not a Relay client) for each Bash tool call, to get
+    # a live allow/deny decision per the current approval mode (M87).
+    post "/internal/permission-requests" do
+      content_type :json
+
+      body_str = request.body.read
+      data = begin
+        JSON.parse(body_str)
+      rescue JSON::ParserError
+        halt 400, JSON.generate({ error: "invalid JSON" })
+      end
+      halt 400, JSON.generate({ error: "body must be a JSON object" }) unless data.is_a?(Hash)
+
+      session_id = data["sessionId"]
+      run_id = data["runId"]
+      tool_name = data["toolName"]
+      tool_input = data["toolInput"]
+      unless session_id.is_a?(String) && tool_name.is_a?(String) && tool_input.is_a?(Hash)
+        halt 422, JSON.generate({ error: "sessionId, toolName, and toolInput are required" })
+      end
+
+      store = settings.approval_settings_store
+      mode = store.nil? ? RelayDaemon::ApprovalSettingsStore::DEFAULT_MODE : store.mode
+
+      decision = case mode
+                 when RelayDaemon::ApprovalSettingsStore::FULL_AUTO
+                   "allow"
+                 when RelayDaemon::ApprovalSettingsStore::ASK_ON_SENSITIVE
+                   RelayDaemon::ToolSensitivityClassifier.sensitive?(tool_name, tool_input) ? nil : "allow"
+                 else
+                   nil
+                 end
+
+      if decision.nil?
+        request_id = SecureRandom.uuid
+        settings.event_bus.publish(
+          type: "tool.permission_requested",
+          payload: {
+            "sessionId" => session_id, "agentRunId" => run_id,
+            "requestId" => request_id, "toolName" => tool_name, "toolInput" => tool_input
+          }
+        )
+        decision = settings.permission_request_registry.await(
+          request_id, timeout_seconds: settings.permission_request_timeout_seconds
+        )
+        settings.event_bus.publish(
+          type: "tool.permission_resolved",
+          payload: { "sessionId" => session_id, "agentRunId" => run_id, "requestId" => request_id, "decision" => decision }
+        )
+      end
+
+      JSON.generate({ "decision" => decision })
     end
 
     # ----- Chat sessions -----
@@ -500,8 +741,13 @@ module RelayDaemon
         halt 422, JSON.generate({ error: "title must be a non-empty string of at most 200 characters" })
       end
 
+      begin
+        execution = data.key?("execution") ? RelayDaemon::ExecutionConfig.validate(data["execution"]) : nil
+      rescue ArgumentError => e
+        halt 422, JSON.generate({ error: e.message })
+      end
       session = RelayDaemon::App.with_repo_lock(repo["id"]) do
-        created = session_store.create(repo: repo, worktrees_dir: settings.relay_config.worktrees_dir)
+        created = session_store.create(repo: repo, worktrees_dir: settings.relay_config.worktrees_dir, execution: execution)
         created = session_store.rename(created["id"], title) unless title.nil?
         created
       end
@@ -532,9 +778,17 @@ module RelayDaemon
       repo = repo_store.find(data["repoId"])
       halt 422, JSON.generate({ error: "repo not found" }) if repo.nil?
 
+      begin
+        execution = data.key?("execution") ? RelayDaemon::ExecutionConfig.validate(data["execution"]) : nil
+      rescue ArgumentError => e
+        halt 422, JSON.generate({ error: e.message })
+      end
       session, created = RelayDaemon::App.with_repo_lock(repo["id"]) do
         current = session_store.most_recent_active_for_repo(repo["id"])
-        current ? [current, false] : [session_store.create(repo: repo, worktrees_dir: settings.relay_config.worktrees_dir), true]
+        if current && execution && current["execution"] != execution
+          halt 409, JSON.generate({ error: "existing thread has different execution settings; create a new thread" })
+        end
+        current ? [current, false] : [session_store.create(repo: repo, worktrees_dir: settings.relay_config.worktrees_dir, execution: execution), true]
       end
       status(created ? 201 : 200)
       publish_session_updated(session) if created
@@ -634,8 +888,9 @@ module RelayDaemon
       begin
         session = reserve_active_session(session_store, session["id"], session["repoId"])
         reserved = true
-        agent_command = settings.relay_config.agent_command
+        agent_command = settings.relay_config.agent_command || (%w[codex copilot gemini omp].include?(session.dig("execution", "harnessId")) ? "relay-bridge" : nil)
         halt 503, JSON.generate({ error: "agent command not configured" }) if agent_command.nil?
+        selected_model = execution_model(session, override: model_override)
 
         message_store = RelayDaemon::MessageStore.new(db, session_store)
         resume = !message_store.list_for_session(session["id"]).empty?
@@ -652,11 +907,7 @@ module RelayDaemon
         )
         publish_session_updated(T.must(session_store.find(session["id"])))
 
-        agent_argv = RelayDaemon::SessionRunner.build_argv(agent_command, content, session_id: session["id"], resume: resume)
-        agent_argv = RelayDaemon::SessionRunner.enable_claude_streaming(
-          agent_argv, enabled: settings.relay_config.claude_streaming
-        )
-        agent_argv += ["--model", model_override || "relay-auto"]
+        agent_argv = execution_argv(agent_command, session, content, selected_model, resume: resume, run_id: run_id)
 
         RelayDaemon::SessionRunner.run_async(
           session_id: session["id"],
@@ -666,7 +917,8 @@ module RelayDaemon
           agent_command: agent_argv,
           db_path: settings.relay_config.db_path,
           event_bus: settings.event_bus,
-          router_base_url: settings.relay_config.router_base_url,
+          router_base_url: settings.relay_config.router_base_url + (session.dig("execution", "inferenceMode") == "async" ? "/async" : ""),
+          run_timeout_seconds: session.dig("execution", "inferenceMode") == "async" ? 3600 : RelayDaemon::SessionRunner::DEFAULT_RUN_TIMEOUT_SECONDS,
           run_id: run_id,
           append_user: false,
           resume: resume,
@@ -688,6 +940,8 @@ module RelayDaemon
       halt 503, JSON.generate({ error: "session store not configured" }) if session_store.nil?
       session = session_store.find(params[:id])
       halt 404, JSON.generate({ error: "not found" }) if session.nil?
+
+      return JSON.generate([]) if session["baseCommit"].to_s.empty?
 
       git = RelayDaemon::Git.new(File.join(settings.relay_config.worktrees_dir, session["id"]))
       JSON.generate(git.diff_files(session["baseCommit"].to_s))
@@ -759,8 +1013,9 @@ module RelayDaemon
           result = { "testsPassed" => tests_passed }
 
           if tests_passed == false && auto_retry
-            agent_command = settings.relay_config.agent_command
+            agent_command = settings.relay_config.agent_command || (%w[codex copilot gemini omp].include?(session.dig("execution", "harnessId")) ? "relay-bridge" : nil)
             halt 503, JSON.generate({ error: "agent command not configured" }) if agent_command.nil?
+            selected_model = execution_model(session)
 
             tail_output = File.readlines(log_path).last(50).join
             retry_content = "Tests failed:\n#{tail_output}Fix and keep changes minimal."
@@ -779,13 +1034,7 @@ module RelayDaemon
             )
             publish_session_updated(T.must(session_store.find(session["id"])))
 
-            agent_argv = RelayDaemon::SessionRunner.build_argv(
-              agent_command, retry_content, session_id: session["id"], resume: true
-            )
-            agent_argv = RelayDaemon::SessionRunner.enable_claude_streaming(
-              agent_argv, enabled: settings.relay_config.claude_streaming
-            )
-            agent_argv += ["--model", "relay-auto"]
+            agent_argv = execution_argv(agent_command, session, retry_content, selected_model, resume: true, run_id: run_id)
 
             RelayDaemon::SessionRunner.run_async(
               session_id: session["id"],
@@ -795,7 +1044,8 @@ module RelayDaemon
               agent_command: agent_argv,
               db_path: settings.relay_config.db_path,
               event_bus: settings.event_bus,
-              router_base_url: settings.relay_config.router_base_url,
+              router_base_url: settings.relay_config.router_base_url + (session.dig("execution", "inferenceMode") == "async" ? "/async" : ""),
+          run_timeout_seconds: session.dig("execution", "inferenceMode") == "async" ? 3600 : RelayDaemon::SessionRunner::DEFAULT_RUN_TIMEOUT_SECONDS,
               run_id: run_id,
               append_user: false,
               resume: true,
@@ -829,6 +1079,7 @@ module RelayDaemon
         session = session_store.find(params[:id])
         halt 404, JSON.generate({ error: "not found" }) if session.nil?
         require_active_session(session)
+        halt 422, JSON.generate({ error: "Folder sessions save changes directly; there is no branch to merge." }) if session["baseCommit"].to_s.empty?
         git = RelayDaemon::Git.new(repo["path"])
         begin
           git.merge(session["branch"])
@@ -843,6 +1094,52 @@ module RelayDaemon
       updated = T.must(session_store.find(session["id"]))
       publish_session_updated(updated)
       JSON.generate(updated)
+    end
+
+    # Client answer (M88) to a "tool.permission_requested" event: resolves
+    # the matching /internal/permission-requests call still blocked in
+    # permission_hook.rb, waiting on ApprovalSettingsStore::ASK_ON_SENSITIVE
+    # or ASK_EVERY_TIME. 409 if it already resolved or timed out.
+    post "/sessions/:id/permission-requests/:requestId" do
+      content_type :json
+
+      session_store = settings.session_store
+      halt 503, JSON.generate({ error: "session store not configured" }) if session_store.nil?
+      halt 404, JSON.generate({ error: "not found" }) if session_store.find(params[:id]).nil?
+
+      body_str = request.body.read
+      data = begin
+        JSON.parse(body_str)
+      rescue JSON::ParserError
+        halt 400, JSON.generate({ error: "invalid JSON" })
+      end
+
+      decision = data["decision"] if data.is_a?(Hash)
+      unless %w[allow deny].include?(decision)
+        halt 422, JSON.generate({ error: "decision must be \"allow\" or \"deny\"" })
+      end
+
+      resolved = settings.permission_request_registry.resolve(params[:requestId], decision)
+      halt 409, JSON.generate({ error: "permission request already resolved or expired" }) unless resolved
+
+      status 204
+      ""
+    end
+
+    # Cancels the agent run currently in progress for this session, if any.
+    # 409 when nothing is running -- there is no "run" to point at otherwise
+    # (matches the existing convention of using 409 for a state conflict).
+    post "/sessions/:id/stop" do
+      content_type :json
+
+      session_store = settings.session_store
+      halt 503, JSON.generate({ error: "session store not configured" }) if session_store.nil?
+      halt 404, JSON.generate({ error: "not found" }) if session_store.find(params[:id]).nil?
+
+      halt 409, JSON.generate({ error: "no run in progress" }) unless RelayDaemon::SessionRunner.stop(params[:id])
+
+      status 202
+      JSON.generate({ "stopped" => true })
     end
 
     post "/sessions/:id/discard" do
@@ -864,9 +1161,13 @@ module RelayDaemon
         if RelayDaemon::SessionRunner.running?(session["id"])
           halt 409, JSON.generate({ error: "agent run in progress" })
         end
-        git = RelayDaemon::Git.new(repo["path"])
-        git.worktree_remove(File.join(settings.relay_config.worktrees_dir, session["id"]))
-        git.branch_delete(session["branch"])
+        if session["baseCommit"].to_s.empty?
+          File.unlink(File.join(settings.relay_config.worktrees_dir, session["id"]))
+        else
+          git = RelayDaemon::Git.new(repo["path"])
+          git.worktree_remove(File.join(settings.relay_config.worktrees_dir, session["id"]))
+          git.branch_delete(session["branch"])
+        end
         session_store.discard(session["id"])
       end
       publish_session_updated(T.must(discarded))

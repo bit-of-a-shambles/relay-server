@@ -1,0 +1,53 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require "open3"
+require "timeout"
+require_relative "../lib/relay_daemon/codex_adapter"
+require_relative "../lib/relay_daemon/copilot_adapter"
+require_relative "../lib/relay_daemon/gemini_adapter"
+require_relative "../lib/relay_daemon/omp_adapter"
+require_relative "../lib/relay_daemon/session_store"
+require_relative "../lib/relay_daemon/approval_settings_store"
+require_relative "../lib/relay_daemon/permission_hook"
+
+STDOUT.sync = true
+options = JSON.parse(ARGV.fetch(0))
+db = RelayDaemon::Db.new(options.fetch("dbPath"))
+store = RelayDaemon::SessionStore.new(db)
+session = store.find(options.fetch("sessionId"))
+mode = RelayDaemon::ApprovalSettingsStore.new(db).mode
+emit = ->(value) { puts(value.is_a?(String) ? value : JSON.generate(value)) }
+decide = lambda do |params|
+  command = params["command"] || params.dig("toolCall", "rawInput", "command") || "sudo harness permission: #{params['reason']}"
+  command = command.join(" ") if command.is_a?(Array)
+  value = RelayDaemon::PermissionHook.decide(raw_stdin: JSON.generate({ "tool_name" => "Bash", "tool_input" => { "command" => command } }), env: ENV.to_h)
+  value.dig("hookSpecificOutput", "permissionDecision") == "allow"
+end
+begin
+  adapter = { "copilot" => RelayDaemon::CopilotAdapter, "codex" => RelayDaemon::CodexAdapter, "gemini" => RelayDaemon::GeminiAdapter, "omp" => RelayDaemon::OmpAdapter }.fetch(session.dig("execution", "harnessId"))
+  config = { executable: options.fetch("executable"), provider: session.fetch("execution").fetch("providerId"), router_base: ENV.fetch("ANTHROPIC_BASE_URL") }
+  config[:model] = options.fetch("model") unless adapter == RelayDaemon::CodexAdapter
+  config.merge!(content: options.fetch("content"), native_id: session["harnessSessionId"], mode: mode) if adapter == RelayDaemon::GeminiAdapter
+  config.merge!(native_id: session["harnessSessionId"], mode: mode, session_dir: options.fetch("sessionDir")) if adapter == RelayDaemon::OmpAdapter
+  command = adapter.command(**config)
+  environment = { "RELAY_UPSTREAM_KEY" => "relay-dummy" }
+  environment.merge!(adapter.environment(provider: config[:provider], router_base: config[:router_base], model: options.fetch("model"))) if adapter == RelayDaemon::CopilotAdapter
+  environment.merge!(adapter.environment(provider: config[:provider], router_base: config[:router_base], model: options.fetch("model"), session_dir: options.fetch("sessionDir"))) if adapter == RelayDaemon::OmpAdapter
+  Open3.popen2(environment, *command) do |writer, reader, child|
+    begin
+      adapter.new.run(reader: reader, writer: writer, content: options.fetch("content"), native_id: session["harnessSessionId"],
+        model: options.fetch("model"), mode: mode, persist: ->(id) { store.bind_harness_session(session.fetch("id"), id) }, emit: emit, decide: decide)
+    ensure
+      writer.close
+      Process.kill("TERM", child.pid) if child.alive?
+      Timeout.timeout(5) { child.join }
+    end
+  end
+rescue StandardError => error
+  emit.call({ "type" => "result", "result" => "Harness failed: #{error.message}" })
+  exit 1
+ensure
+  db.close_current_connection
+end

@@ -2,11 +2,14 @@
 
 require "spec_helper"
 require "relay_daemon/app"
+require "relay_daemon/approval_settings_store"
 require "relay_daemon/config"
 require "relay_daemon/db"
 require "relay_daemon/llm_call_store"
+require "relay_daemon/permission_request_registry"
 require "relay_daemon/repo_store"
 require "relay_daemon/session_store"
+require "timeout"
 require "tmpdir"
 
 RSpec.describe RelayDaemon::App do
@@ -364,6 +367,189 @@ RSpec.describe RelayDaemon::App do
       it "returns 503" do
         expect(last_response.status).to eq(503)
       end
+    end
+  end
+
+  # ----- GET/PATCH /settings/approval-mode -----
+
+  describe "GET and PATCH /settings/approval-mode" do
+    let(:db_path) { File.join(Dir.mktmpdir, "test.sqlite3") }
+    let(:db) { RelayDaemon::Db.new(db_path) }
+    let(:store) { RelayDaemon::ApprovalSettingsStore.new(db) }
+
+    before { described_class.set(:approval_settings_store, store) }
+    after { db.connection.close }
+
+    def auth_headers
+      { "HTTP_AUTHORIZATION" => "Bearer #{token}" }
+    end
+
+    it "returns the default mode" do
+      get "/settings/approval-mode", {}, auth_headers
+
+      expect(last_response.status).to eq(200)
+      expect(JSON.parse(last_response.body)).to eq("mode" => "ask_on_sensitive")
+    end
+
+    it "updates and persists the mode" do
+      patch "/settings/approval-mode", JSON.generate("mode" => "full_auto"),
+            { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+
+      expect(last_response.status).to eq(200)
+      expect(JSON.parse(last_response.body)).to eq("mode" => "full_auto")
+      expect(store.mode).to eq("full_auto")
+    end
+
+    it "rejects an invalid mode" do
+      patch "/settings/approval-mode", JSON.generate("mode" => "yolo"),
+            { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+
+      expect(last_response.status).to eq(422)
+      expect(store.mode).to eq("ask_on_sensitive")
+    end
+
+    it "rejects invalid JSON" do
+      patch "/settings/approval-mode", "not json",
+            { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+
+      expect(last_response.status).to eq(400)
+    end
+
+    it "503s when the store isn't configured" do
+      described_class.set(:approval_settings_store, nil)
+
+      get "/settings/approval-mode", {}, auth_headers
+      expect(last_response.status).to eq(503)
+
+      patch "/settings/approval-mode", JSON.generate("mode" => "full_auto"),
+            { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+      expect(last_response.status).to eq(503)
+    end
+  end
+
+  # ----- POST /internal/permission-requests -----
+
+  describe "POST /internal/permission-requests" do
+    let(:db_path) { File.join(Dir.mktmpdir, "test.sqlite3") }
+    let(:db) { RelayDaemon::Db.new(db_path) }
+    let(:store) { RelayDaemon::ApprovalSettingsStore.new(db) }
+    let(:registry) { RelayDaemon::PermissionRequestRegistry.new }
+    let(:config) do
+      RelayDaemon::Config.new(
+        daemon_token: token, internal_token: internal_token,
+        host: "127.0.0.1", port: 7777, db_path: db_path
+      )
+    end
+
+    before do
+      described_class.set(:approval_settings_store, store)
+      described_class.set(:permission_request_registry, registry)
+      described_class.set(:permission_request_timeout_seconds, 2)
+    end
+    after { db.connection.close }
+
+    def post_request(body, headers = {})
+      post "/internal/permission-requests", JSON.generate(body),
+           { "CONTENT_TYPE" => "application/json", "HTTP_AUTHORIZATION" => "Bearer #{internal_token}" }.merge(headers)
+    end
+
+    it "requires the internal token, not the client daemon token" do
+      post "/internal/permission-requests",
+           JSON.generate("sessionId" => "s", "toolName" => "Bash", "toolInput" => {}),
+           { "CONTENT_TYPE" => "application/json", "HTTP_AUTHORIZATION" => "Bearer #{token}" }
+
+      expect(last_response.status).to eq(401)
+    end
+
+    it "rejects a body missing required fields" do
+      post_request("sessionId" => "s1")
+
+      expect(last_response.status).to eq(422)
+    end
+
+    it "rejects invalid JSON" do
+      post "/internal/permission-requests", "not json",
+           { "CONTENT_TYPE" => "application/json", "HTTP_AUTHORIZATION" => "Bearer #{internal_token}" }
+
+      expect(last_response.status).to eq(400)
+    end
+
+    it "allows immediately in full_auto mode without a live round-trip" do
+      store.update_mode!("full_auto")
+      events = []
+      RelayDaemon::App.settings.event_bus.subscribe { |event| events << event }
+
+      post_request("sessionId" => "s1", "runId" => "r1", "toolName" => "Bash", "toolInput" => { "command" => "rm -rf /" })
+
+      expect(last_response.status).to eq(200)
+      expect(JSON.parse(last_response.body)).to eq("decision" => "allow")
+      expect(events).to be_empty
+    end
+
+    it "allows a non-sensitive command immediately in ask_on_sensitive mode" do
+      store.update_mode!("ask_on_sensitive")
+
+      post_request("sessionId" => "s1", "runId" => "r1", "toolName" => "Bash", "toolInput" => { "command" => "ls" })
+
+      expect(JSON.parse(last_response.body)).to eq("decision" => "allow")
+    end
+
+    def wait_for_requested_event(events)
+      Timeout.timeout(2) do
+        loop do
+          requested = events.find { |event| event["type"] == "tool.permission_requested" }
+          break requested if requested
+
+          Thread.pass
+        end
+      end
+    end
+
+    it "escalates a sensitive command in ask_on_sensitive mode and resolves via the client decision" do
+      store.update_mode!("ask_on_sensitive")
+      events = []
+      RelayDaemon::App.settings.event_bus.subscribe { |event| events << event }
+
+      thread = Thread.new do
+        post_request("sessionId" => "s1", "runId" => "r1", "toolName" => "Bash", "toolInput" => { "command" => "sudo rm -rf /" })
+      end
+      requested = wait_for_requested_event(events)
+
+      expect(requested["payload"]).to include("sessionId" => "s1", "agentRunId" => "r1", "toolName" => "Bash")
+      request_id = requested["payload"]["requestId"]
+
+      expect(registry.resolve(request_id, "deny")).to be true
+      thread.join
+
+      expect(JSON.parse(last_response.body)).to eq("decision" => "deny")
+      resolved = events.find { |event| event["type"] == "tool.permission_resolved" }
+      expect(resolved["payload"]).to eq(
+        "sessionId" => "s1", "agentRunId" => "r1", "requestId" => request_id, "decision" => "deny"
+      )
+    end
+
+    it "always escalates in ask_every_time mode, even for a harmless command" do
+      store.update_mode!("ask_every_time")
+      events = []
+      RelayDaemon::App.settings.event_bus.subscribe { |event| events << event }
+
+      thread = Thread.new do
+        post_request("sessionId" => "s1", "runId" => "r1", "toolName" => "Bash", "toolInput" => { "command" => "ls" })
+      end
+      requested = wait_for_requested_event(events)
+
+      expect(registry.resolve(requested["payload"]["requestId"], "allow")).to be true
+      thread.join
+
+      expect(JSON.parse(last_response.body)).to eq("decision" => "allow")
+    end
+
+    it "denies after the timeout when nobody answers" do
+      store.update_mode!("ask_every_time")
+
+      post_request("sessionId" => "s1", "runId" => "r1", "toolName" => "Bash", "toolInput" => { "command" => "ls" })
+
+      expect(JSON.parse(last_response.body)).to eq("decision" => "deny")
     end
   end
 end

@@ -4,6 +4,7 @@
 require "json"
 require "sorbet-runtime"
 require_relative "provider_store"
+require_relative "open_router_models"
 
 module RelayDaemon
   # Backs `GET /models`: reads the routing-config JSON that RoutingConfigWriter
@@ -36,10 +37,11 @@ module RelayDaemon
       T::Hash[String, T.untyped]
     )
 
-    sig { params(routing_config_path: T.nilable(String), provider_store: T.nilable(ProviderStore)).void }
-    def initialize(routing_config_path, provider_store: nil)
+    sig { params(routing_config_path: T.nilable(String), provider_store: T.nilable(ProviderStore), open_router_models: T.nilable(OpenRouterModels)).void }
+    def initialize(routing_config_path, provider_store: nil, open_router_models: nil)
       @routing_config_path = routing_config_path
       @provider_store = provider_store
+      @open_router_models = open_router_models
     end
 
     # { "tiers" => [{ "tier" => 0, "models" => [...] }, ...],
@@ -55,12 +57,15 @@ module RelayDaemon
       sorted_tiers = tiers.map { |tier, models| { "tier" => tier.to_i, "models" => models } }
                           .sort_by { |entry| T.cast(entry.fetch("tier"), Integer) }
 
-      {
+      result = {
         "tiers" => sorted_tiers,
         "frontierModel" => config.fetch("frontierModel"),
         "source" => source,
         "custom" => custom_models
       }
+      upstream = @open_router_models
+      result.merge!(upstream.catalog) unless upstream.nil?
+      result
     end
 
     private

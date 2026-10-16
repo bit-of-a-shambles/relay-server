@@ -12,6 +12,7 @@ struct SettingsView: View {
     @State private var anthropicAPIKey: String
     @State private var openRouterAPIKey = ""
     @State private var credentialSource: OpenRouterCredentialSource
+    @State private var harnessPaths: [String: String]
     @State private var saved = false
     @State private var errorMessage: String?
 
@@ -29,10 +30,10 @@ struct SettingsView: View {
         _agentCommandTemplate = State(initialValue: config.agentCommandTemplate)
         _routerBaseURL = State(initialValue: config.routerBaseURL)
         _anthropicAPIKey = State(initialValue: config.anthropicAPIKey)
-        let storedKey = (try? credentialStore.read()) ?? nil
+        _harnessPaths = State(initialValue: config.harnessPaths)
         _credentialSource = State(
             initialValue: OpenRouterCredentialSource.resolve(
-                keychainValue: storedKey,
+                keychainValue: nil,
                 environment: environment
             )
         )
@@ -56,6 +57,14 @@ struct SettingsView: View {
                 Text("Session routing uses the configured router base URL below.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            Section("Installed Harnesses") {
+                ForEach(DaemonLaunchConfig.harnessIDs, id: \.self) { id in
+                    TextField("\(id) executable path", text: Binding(get: { harnessPaths[id] ?? "" }, set: { harnessPaths[id] = $0 }))
+                }
+                Text("Leave blank for automatic discovery. Sign in to harnesses on this Mac. Saved paths apply when the daemon restarts; refresh discovery from iPhone Settings.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
 
             Section("Router") {
@@ -102,6 +111,13 @@ struct SettingsView: View {
                 }
             }
         }
+        .task {
+            let storedKey = (try? credentialStore.read()) ?? nil
+            credentialSource = OpenRouterCredentialSource.resolve(
+                keychainValue: storedKey,
+                environment: environmentAPIKey.map { ["OPENROUTER_API_KEY": $0] } ?? [:]
+            )
+        }
         .formStyle(.grouped)
         .padding()
         .frame(width: 460)
@@ -121,7 +137,8 @@ struct SettingsView: View {
                 port: Int(port) ?? DaemonLaunchConfig.defaultPort,
                 agentCommandTemplate: agentCommandTemplate,
                 routerBaseURL: routerBaseURL,
-                anthropicAPIKey: anthropicAPIKey
+                anthropicAPIKey: anthropicAPIKey,
+                harnessPaths: harnessPaths
             )
             config.save(to: userDefaults)
             errorMessage = nil

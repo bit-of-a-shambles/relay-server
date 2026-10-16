@@ -6,6 +6,7 @@ require "fileutils"
 require "sorbet-runtime"
 require_relative "eval_store"
 require_relative "provider_store"
+require_relative "source_catalog"
 
 module RelayDaemon
   # Turns accumulated test outcomes into a routing config the TypeScript router
@@ -54,14 +55,16 @@ module RelayDaemon
         eval_store: EvalStore,
         base_config: T::Hash[String, T.untyped],
         min_samples: Integer,
-        provider_store: T.nilable(ProviderStore)
+        provider_store: T.nilable(ProviderStore),
+        source_catalog: T.nilable(SourceCatalog)
       ).void
     end
-    def initialize(eval_store, base_config: DEFAULT_BASE_CONFIG, min_samples: MIN_SAMPLES, provider_store: nil)
+    def initialize(eval_store, base_config: DEFAULT_BASE_CONFIG, min_samples: MIN_SAMPLES, provider_store: nil, source_catalog: nil)
       @eval_store     = eval_store
       @base_config    = base_config
       @min_samples    = min_samples
       @provider_store = provider_store
+      @source_catalog = source_catalog
     end
 
     # Routing-config hash (router schema) with each tier's models reordered by
@@ -96,6 +99,9 @@ module RelayDaemon
     # the base config already had when no provider store is configured.
     sig { returns(T::Hash[String, T.untyped]) }
     def providers_section
+      sources = @source_catalog
+      return sources.routing_providers unless sources.nil?
+
       store = @provider_store
       return T.cast(@base_config.fetch("providers", {}), T::Hash[String, T.untyped]) if store.nil?
 

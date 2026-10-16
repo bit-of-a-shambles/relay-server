@@ -39,6 +39,41 @@ Conventions used throughout:
   stops there per AGENTS.md ("Stop conditions") and reports what the user
   needs to do instead of implementing anything.
 
+### M117 — Publish a Mac server matching the current client
+
+- [x] M117 complete
+
+**User priority (2026-10-16):** complete the work required for App Store
+readiness. The public Mac source lacks the shipped client execution APIs.
+**Read:** public `AGENTS.md`, `docs/AGENT_PLAYBOOK.md`, `docs/STATUS.md`,
+`README.md`, `daemon/README.md`, `scripts/release.sh`,
+`scripts/release_test.sh`, `site/index.html`, `site/privacy.html`,
+`site/support.html`, `site/terms.html`, and the validated runtime's
+`daemon/lib/relay_daemon/harness_catalog.rb`, `source_catalog.rb`,
+`execution_config.rb`, `omp_adapter.rb`, `daemon/bin/daemon`,
+`daemon/bin/harness_bridge`, and `daemon/bin/permission_hook`.
+**Goal:** synchronize only public daemon/router/menubar code and its tests,
+include required runtime helper executables in release archives, and provide
+working source-install and business support instructions.
+**Done when:** full public component gates and packaging regression checks
+pass unchanged; secret/private-path checks pass; the reviewed branch is
+published and the current runtime/install/support content is available to
+new users. No private client source, signing material or release records enter
+the public tree. A nonexistent Homebrew tap is not advertised as installable.
+**Validate:** router build/test/100% coverage; daemon Sorbet/RSpec/100% lines;
+menubar XcodeGen/test/build; offline packaging regression; secret/path scan;
+source-install smoke and deployed site readback. Physical client acceptance
+and App Privacy publication remain separate owner gates.
+
+Validated on 2026-10-16: router 74 tests with 100% coverage in all metrics;
+daemon Sorbet plus 500 examples with 100% line coverage; menubar 46 tests
+and build; offline packaging contracts in both maintained trees. Preserved
+the existing UTF-8 migration regression. Fresh source startup, pairing,
+installed-harness discovery and credential revocation passed. The Oh My Pi
+RPC startup/state exchange was verified without sending a prompt. Changed
+source passes secret/private-path checks. Site content was checked at iPhone
+width with no horizontal overflow. Publication proceeds through the branch PR.
+
 ---
 
 ## Track A — Daemon scaffold
