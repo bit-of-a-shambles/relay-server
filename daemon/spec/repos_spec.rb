@@ -108,12 +108,13 @@ RSpec.describe "Repos API" do
       expect(JSON.parse(last_response.body)["error"]).to include("does not exist")
     end
 
-    it "returns 422 when path is not a git repo" do
+    it "registers a plain folder without initializing Git" do
       post "/repos",
            { path: plain_dir }.to_json,
            { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
-      expect(last_response.status).to eq(422)
-      expect(JSON.parse(last_response.body)["error"]).to include("git")
+      expect(last_response.status).to eq(201)
+      expect(JSON.parse(last_response.body)["path"]).to eq(plain_dir)
+      expect(File.exist?(File.join(plain_dir, ".git"))).to be false
     end
 
     it "returns 409 on duplicate path" do

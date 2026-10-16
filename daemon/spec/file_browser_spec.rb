@@ -79,6 +79,15 @@ RSpec.describe "File browser API" do
 end
 
 RSpec.describe RelayDaemon::FileBrowser do
+  it "recognizes Git worktree metadata files" do
+    root = Dir.mktmpdir
+    child = File.join(root, "worktree")
+    FileUtils.mkdir_p(child)
+    File.write(File.join(child, ".git"), "gitdir: /tmp/git/worktrees/example")
+    expect(described_class.new.list(path: root)["entries"].first["isGitRepo"]).to be true
+    expect(described_class.new.list(path: child)["isGitRepo"]).to be true
+  end
+
   it "defaults an empty path to the current user's home directory" do
     result = described_class.new.list(path: "")
 

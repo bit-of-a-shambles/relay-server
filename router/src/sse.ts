@@ -146,7 +146,7 @@ export function sse(event: string, data: unknown): string {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 }
 
-async function* parseSse(stream: ReadableStream<Uint8Array>): AsyncGenerator<SseMessage> {
+export async function* parseSse(stream: ReadableStream<Uint8Array>): AsyncGenerator<SseMessage> {
   const decoder = new TextDecoder();
   let buffer = "";
 

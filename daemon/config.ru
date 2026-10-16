@@ -3,6 +3,7 @@
 $LOAD_PATH.unshift File.join(__dir__, "lib")
 
 require "relay_daemon/app"
+require "relay_daemon/approval_settings_store"
 require "relay_daemon/config"
 require "relay_daemon/db"
 require "relay_daemon/llm_call_store"
@@ -15,14 +16,20 @@ require "relay_daemon/session_store"
 
 config = RelayDaemon::Config.from_env
 db     = RelayDaemon::Db.new(config.db_path)
+RelayDaemon::InferenceJobStore.new(db).recover!
 
 RelayDaemon::App.set(:relay_config, config)
 RelayDaemon::App.set(:stats_db, db)
 RelayDaemon::App.set(:llm_call_store, RelayDaemon::LlmCallStore.new(db))
 RelayDaemon::App.set(:repo_store, RelayDaemon::RepoStore.new(db))
 RelayDaemon::App.set(:provider_store, RelayDaemon::ProviderStore.new(db))
+RelayDaemon::App.set(:open_router_models, RelayDaemon::OpenRouterModels.new)
+RelayDaemon::App.set(:source_catalog, RelayDaemon::SourceCatalog.new(store: RelayDaemon::App.settings.provider_store, open_router: RelayDaemon::App.settings.open_router_models))
+RelayDaemon::RoutingConfigWriter.new(RelayDaemon::EvalStore.new(db), provider_store: RelayDaemon::App.settings.provider_store, source_catalog: RelayDaemon::App.settings.source_catalog).write!(config.routing_config_path) unless config.routing_config_path.nil?
+RelayDaemon::App.set(:harness_catalog, RelayDaemon::HarnessCatalog.new)
 RelayDaemon::App.set(:session_store, RelayDaemon::SessionStore.new(db))
 RelayDaemon::App.set(:pairing_service, RelayDaemon::PairingService.new(db))
+RelayDaemon::App.set(:approval_settings_store, RelayDaemon::ApprovalSettingsStore.new(db))
 push_device_store = RelayDaemon::PushDeviceStore.new(db)
 RelayDaemon::App.set(:push_device_store, push_device_store)
 push_notifier = RelayDaemon::PushNotifier.new(

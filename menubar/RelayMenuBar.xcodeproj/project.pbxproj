@@ -11,6 +11,7 @@
 		0F729CB9FA6387A17BD43CD8 /* SettingsWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA5CDE19820CFDCD5B1DDB81 /* SettingsWindowController.swift */; };
 		206CB8C710274C0031132B7D /* SettingsWindowControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E34805D644093EB1ADFBA193 /* SettingsWindowControllerTests.swift */; };
 		4053E350608B17557E295F13 /* RelayMenuBarApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC334EAAFEE07FE850B87923 /* RelayMenuBarApp.swift */; };
+		43070BE4ACB0E09705CB81E2 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 6BBEEE3BC38AF0052A05A795 /* Assets.xcassets */; };
 		4CB3C812D95350BA1498F403 /* OpenRouterCredentialStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44DD26F7D1E603A241A1FA70 /* OpenRouterCredentialStoreTests.swift */; };
 		4FF98680E2006425F31746D3 /* OpenRouterCredentialStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FE134D17A7081B148332F8F /* OpenRouterCredentialStore.swift */; };
 		7A4981F84CD3A9ED2D023B60 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 347B520EB5B2984BF1AE0442 /* AppDelegate.swift */; };
@@ -40,6 +41,7 @@
 		42CA0F7B41B9ABD04B39585D /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		44DD26F7D1E603A241A1FA70 /* OpenRouterCredentialStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenRouterCredentialStoreTests.swift; sourceTree = "<group>"; };
 		4F262C7BF12294A53FDCA122 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		6BBEEE3BC38AF0052A05A795 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		9890B3ECE06CB661888EF237 /* RelayMenuBar.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = RelayMenuBar.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B889A5E7271E0EC8C1B0E945 /* RelayMenuBarTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = RelayMenuBarTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		C2F6B8AC96FC1B36E843B37B /* OpenRouterCredentialSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenRouterCredentialSource.swift; sourceTree = "<group>"; };
@@ -53,6 +55,7 @@
 		3AC585B82FE1953A69011983 /* Resources */ = {
 			isa = PBXGroup;
 			children = (
+				6BBEEE3BC38AF0052A05A795 /* Assets.xcassets */,
 				4F262C7BF12294A53FDCA122 /* Info.plist */,
 			);
 			path = Resources;
@@ -127,6 +130,7 @@
 			buildConfigurationList = 995470B0BAFC5AE3F2A49277 /* Build configuration list for PBXNativeTarget "RelayMenuBar" */;
 			buildPhases = (
 				1B16B9C59FDAA8993A53F8F6 /* Sources */,
+				48DCA0CDA653425A0A2FA64F /* Resources */,
 			);
 			buildRules = (
 			);
@@ -187,6 +191,17 @@
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		48DCA0CDA653425A0A2FA64F /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				43070BE4ACB0E09705CB81E2 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		1B16B9C59FDAA8993A53F8F6 /* Sources */ = {

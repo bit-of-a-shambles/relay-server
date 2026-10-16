@@ -73,12 +73,27 @@ class FakeWs
   def rack_response
     [200, {}, []]
   end
+
+  def open
+    @handlers[:open]&.call
+  end
 end
 
 RSpec.describe RelayDaemon::WsHandler do
   let(:bus) { RelayDaemon::EventBus.new }
 
   describe ".attach" do
+    it "confirms an authorized idle connection is ready after opening" do
+      ws = FakeWs.new
+      described_class.attach(ws, authorized: true, bus: bus)
+      expect(ws.sent).to be_empty
+      ws.open
+      expect(JSON.parse(ws.sent.first)).to eq("type" => "connection.ready", "payload" => {})
+      unauthorized = FakeWs.new
+      described_class.attach(unauthorized, authorized: false, bus: bus)
+      unauthorized.open
+      expect(unauthorized.sent).to be_empty
+    end
     it "forwards bus events as JSON frames when authorized" do
       ws = FakeWs.new
       described_class.attach(ws, authorized: true, bus: bus)

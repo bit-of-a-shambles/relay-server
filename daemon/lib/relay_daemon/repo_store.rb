@@ -26,8 +26,8 @@ module RelayDaemon
     # Raises ArgumentError for validation errors, or SQLite3::ConstraintException on duplicate path.
     sig { params(path: String, test_command: T.nilable(String)).returns(T::Hash[String, T.untyped]) }
     def create(path:, test_command: nil)
+      path = File.expand_path(path)
       raise ArgumentError, "path does not exist" unless File.directory?(path)
-      raise ArgumentError, "not a git repository" unless RelayDaemon::Git.new(path).repo?
 
       name = File.basename(path)
       now  = Time.now.utc.iso8601

@@ -138,7 +138,7 @@ export function chooseRoute(
     };
   }
 
-  if (request.model.includes("::")) {
+  if (request.model.includes("::") || request.model.includes("/")) {
     return {
       requestedModel: request.model,
       routeTarget: request.model,
