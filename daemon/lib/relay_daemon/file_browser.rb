@@ -15,7 +15,7 @@ module RelayDaemon
           "name" => name,
           "path" => File.expand_path(entry_path),
           "isDirectory" => true,
-          "isGitRepo" => File.directory?(File.join(entry_path, ".git"))
+          "isGitRepo" => File.exist?(File.join(entry_path, ".git"))
         }
       rescue Errno::EACCES
         nil
@@ -24,7 +24,7 @@ module RelayDaemon
       {
         "path" => current_path,
         "parentPath" => parent_path(current_path),
-        "isGitRepo" => File.directory?(File.join(current_path, ".git")),
+        "isGitRepo" => File.exist?(File.join(current_path, ".git")),
         "entries" => entries.sort_by { |entry| entry["name"].downcase }
       }
     rescue Errno::EACCES

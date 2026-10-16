@@ -1,11 +1,12 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { URL } from "node:url";
+import { createInferenceJobSink, executeAsyncResponse, type InferenceJobSink } from "./async-inference.js";
 import { fromOpenAIResponse, toOpenAIRequest } from "./translate.js";
 import type {
   AnthropicMessagesRequest,
   OpenAIChatCompletionResponse
 } from "./types.js";
-import { collectText, openAIStreamToAnthropicSse } from "./sse.js";
+import { collectText, openAIStreamToAnthropicSse, parseSse } from "./sse.js";
 import {
   chooseRoute,
   createRoutingConfigLoader,
@@ -33,6 +34,7 @@ export type RouterServerOptions = {
   referer: string;
   title: string;
   fetchImpl?: typeof fetch;
+  inferenceJobSink?: InferenceJobSink | undefined;
 };
 
 const DEFAULT_MAX_BODY_BYTES = 20 * 1024 * 1024;
@@ -57,6 +59,7 @@ export function createRelayRouterServer(options: RouterServerOptions): Server {
 
 export function defaultOptionsFromEnv(): RouterServerOptions {
   return {
+    inferenceJobSink: createInferenceJobSink(process.env.RELAY_LLM_CALL_SINK_URL?.replace("/llm-calls", "/inference-jobs"), process.env.RELAY_LLM_CALL_SINK_TOKEN),
     host: process.env.RELAY_ROUTER_HOST ?? "127.0.0.1",
     port: Number.parseInt(process.env.RELAY_ROUTER_PORT ?? "7778", 10),
     openRouterApiKey: process.env.OPENROUTER_API_KEY,
@@ -80,11 +83,22 @@ async function handleRequest(
   options: RouterServerOptions,
   fetchImpl: typeof fetch
 ): Promise<void> {
-  const url = new URL(request.url as string, "http://relay.local");
+  const url = new URL(request.url as string, "https://relay.local");
 
   if (request.method === "GET" && url.pathname === "/health") {
     sendJson(response, 200, { ok: true });
     return;
+  }
+
+  const asyncMode = url.pathname.startsWith("/api/async/");
+  if (asyncMode) url.pathname = url.pathname.replace("/api/async/", "/api/");
+  const wire = /\/(chat\/completions|responses)$/.exec(url.pathname);
+  if (request.method === "POST" && wire !== null) {
+    const attribution = matchMessagesPath(url.pathname.replace(/\/(chat\/completions|responses)$/, "/messages"));
+    if (attribution !== null) {
+      await handleWireRequest(request, response, options, fetchImpl, { ...attribution, asyncMode }, wire[1] as string);
+      return;
+    }
   }
 
   const messagesRoute =
@@ -248,7 +262,69 @@ type CallAttribution = {
   sessionId: string | null;
   runId: string | null;
   escalated: boolean;
+  asyncMode?: boolean;
 };
+
+type NativeUsage = { model?: string; usage?: { completion_tokens?: number; output_tokens?: number; cost?: number }; response?: NativeUsage };
+function updateNativeUsage(payload: NativeUsage, summary: { model: string; tokens: number; cost: number | null }): void {
+  const value = payload.response ?? payload;
+  summary.model = value.model ?? summary.model;
+  if (value.usage) {
+    summary.tokens = value.usage.completion_tokens ?? value.usage.output_tokens ?? summary.tokens;
+    summary.cost = value.usage.cost ?? summary.cost;
+  }
+}
+
+// Preserve each harness's native protocol, including reasoning and tool fields.
+// Explicit provider-qualified models never escalate to a different source.
+async function handleWireRequest(request: IncomingMessage, response: ServerResponse,
+  options: RouterServerOptions, fetchImpl: typeof fetch, attribution: CallAttribution,
+  protocol: string): Promise<void> {
+  const body = JSON.parse(await readBody(request, DEFAULT_MAX_BODY_BYTES)) as Record<string, unknown>;
+  if (typeof body.model !== "string") throw new Error("model is required");
+  const route = chooseRoute({ model: body.model, max_tokens: options.maxCompletionTokens,
+    messages: [{ role: "user", content: JSON.stringify(body) }] }, options.routingConfigLoader.load());
+  const upstream = resolveUpstream(route.routedModel, options.routingConfigLoader.load(), options);
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (upstream.apiKey) headers.Authorization = `Bearer ${upstream.apiKey}`;
+  if (providerNameFor(route.routedModel) === "openrouter" && !upstream.apiKey) throw new Error("OPENROUTER_API_KEY is required");
+  const started = Date.now();
+  const controller = new AbortController();
+  response.on("close", () => controller.abort());
+  if (attribution.asyncMode && (protocol !== "responses" || providerNameFor(route.routedModel) !== "doubleword" || attribution.sessionId === null || attribution.runId === null)) {
+    throw new Error("Async inference requires a Codex thread using Doubleword Responses");
+  }
+  const result = attribution.asyncMode
+    ? await executeAsyncResponse({ body: { ...body, model: upstream.model }, baseUrl: trimRight(upstream.baseUrl, "/"), headers,
+        sessionId: attribution.sessionId as string, runId: attribution.runId as string, signal: controller.signal, fetchImpl, onJob: options.inferenceJobSink })
+    : await fetchImpl(`${trimRight(upstream.baseUrl, "/")}/${protocol}`, {
+        method: "POST", headers, body: JSON.stringify({ ...body, model: upstream.model })
+      });
+  if (!result.ok) {
+    const error = await readUpstreamError(result);
+    await recordCall(options.callLogSink, route, route.routedModel, Date.now() - started, 0, null, "error", error, attribution);
+    sendJson(response, result.status, { error: { message: error } });
+    return;
+  }
+  const summary = { model: route.routedModel, tokens: 0, cost: null as number | null };
+  if (body.stream !== true) {
+    const json = await result.json() as Record<string, unknown>;
+    updateNativeUsage(json, summary);
+    await recordCall(options.callLogSink, route, summary.model, Date.now() - started, summary.tokens, summary.cost, "success", null, attribution);
+    sendJson(response, 200, json);
+    return;
+  }
+  if (result.body === null) throw new Error("Upstream returned an empty stream");
+  response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+  for await (const frame of parseSse(result.body)) {
+    if (frame.data !== "[DONE]") {
+      try { updateNativeUsage(JSON.parse(frame.data) as NativeUsage, summary); } catch { /* Non-JSON frames still pass through unchanged. */ }
+    }
+    response.write(`${frame.event === undefined ? "" : `event: ${frame.event}\n`}data: ${frame.data}\n\n`);
+  }
+  await recordCall(options.callLogSink, route, summary.model, Date.now() - started, summary.tokens, summary.cost, "success", null, attribution);
+  response.end();
+}
 
 async function executeNonStreamingWithRetry(
   anthropicRequest: AnthropicMessagesRequest,

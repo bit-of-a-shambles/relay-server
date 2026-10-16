@@ -19,6 +19,25 @@ RSpec.describe RelayDaemon::SessionStore do
   after { db.connection.close }
 
   describe "#create" do
+    it "runs plain folders, Git subfolders, and unborn repositories in the selected directory" do
+      plain = Dir.mktmpdir
+      nested = File.join(repo_path, "nested")
+      FileUtils.mkdir_p(nested)
+      unborn = Dir.mktmpdir
+      Open3.capture3("git", "-C", unborn, "init")
+      [plain, nested, unborn].each_with_index do |path, index|
+        folder = repo_store.create(path: path)
+        session = store.create(repo: folder, worktrees_dir: worktrees_dir, id: "folder-#{index}")
+        workspace = File.join(worktrees_dir, session["id"])
+        expect(session).to include("baseCommit" => "", "branch" => "")
+        expect(File.symlink?(workspace)).to be true
+        expect(File.realpath(workspace)).to eq(File.realpath(path))
+        File.write(File.join(workspace, "edited.txt"), "saved")
+        expect(File.read(File.join(path, "edited.txt"))).to eq("saved")
+      end
+      expect(File.exist?(File.join(plain, ".git"))).to be false
+    end
+
     it "creates an active chat session row and session worktree" do
       session = store.create(repo: repo, worktrees_dir: worktrees_dir, id: "session-1")
 
@@ -61,6 +80,15 @@ RSpec.describe RelayDaemon::SessionStore do
 
       expect(Dir.exist?(File.join(worktrees_dir, "missing-repo"))).to be false
     end
+  end
+
+  it "persists a harness-native thread ID separately from the Relay thread identity" do
+    session = store.create(repo: repo, worktrees_dir: worktrees_dir)
+    store.bind_harness_session(session["id"], "codex-native-thread")
+    reopened = RelayDaemon::Db.new(db_path)
+    saved = described_class.new(reopened).find(session["id"])
+    expect(saved).to include("id" => session["id"], "harnessSessionId" => "codex-native-thread")
+    reopened.close_current_connection
   end
 
   describe "#discard" do

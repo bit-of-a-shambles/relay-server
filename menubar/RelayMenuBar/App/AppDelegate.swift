@@ -32,9 +32,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
-            button.title = "Relay"
-            if let image = NSImage(systemSymbolName: "bolt.horizontal.circle", accessibilityDescription: "Relay") {
+            if let image = NSImage(named: "StatusBarIcon") {
+                image.isTemplate = true
                 button.image = image
+            } else {
+                button.title = "Relay"
             }
             button.toolTip = "Relay"
         }

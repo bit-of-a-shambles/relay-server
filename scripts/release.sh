@@ -107,6 +107,8 @@ daemon_paths=(
   daemon/Gemfile
   daemon/Gemfile.lock
   daemon/bin/daemon
+  daemon/bin/permission_hook
+  daemon/bin/harness_bridge
   daemon/config.ru
   daemon/db/
   daemon/lib/

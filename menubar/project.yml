@@ -11,6 +11,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: dev.relay.menubar
         SWIFT_VERSION: 5.10
         INFOPLIST_FILE: RelayMenuBar/Resources/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         CODE_SIGNING_ALLOWED: NO
         CODE_SIGNING_REQUIRED: NO
 

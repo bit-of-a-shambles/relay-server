@@ -11,6 +11,14 @@ require "tmpdir"
 
 RSpec.describe RelayDaemon::ModelCatalog do
   describe "#catalog" do
+    it "includes all OpenRouter IDs while keeping tier and custom routing metadata" do
+      upstream = RelayDaemon::OpenRouterModels.new(transport: ->(_offset) { '{"data":[{"id":"vendor/new-model:free"}]}' })
+      result = described_class.new(nil, open_router_models: upstream).catalog
+      expect(result["openRouter"]).to eq(["vendor/new-model:free"])
+      expect(result["openRouterStatus"]).to eq("live")
+      expect(result["tiers"]).not_to be_empty
+    end
+
     it "returns the built-in default, sorted ascending by tier, when path is nil" do
       result = described_class.new(nil).catalog
 
@@ -128,6 +136,16 @@ RSpec.describe "GET /models via app" do
   end
 
   let(:token) { "models-test-token" }
+  after { RelayDaemon::App.set(:open_router_models, nil) }
+
+  it "serves the complete public catalog through the authenticated endpoint" do
+    RelayDaemon::App.set(:open_router_models, RelayDaemon::OpenRouterModels.new(
+      transport: ->(_offset) { '{"data":[{"id":"vendor/new-model:free"}]}' }
+    ))
+    get "/models", {}, { "HTTP_AUTHORIZATION" => "Bearer #{token}" }
+    expect(last_response.status).to eq(200)
+    expect(JSON.parse(last_response.body)["openRouter"]).to eq(["vendor/new-model:free"])
+  end
 
   before do
     RelayDaemon::App.set(:relay_config, RelayDaemon::Config.new(

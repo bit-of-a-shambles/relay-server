@@ -19,6 +19,7 @@ struct DaemonLaunchConfig: Equatable {
     static let defaultAgentCommandTemplate = "claude -p {prompt} --permission-mode acceptEdits"
     static let defaultRouterBaseURL = "http://127.0.0.1:7778/api"
     static let defaultAnthropicAPIKey = "relay-dummy"
+    static let harnessIDs = ["claude", "codex", "gemini", "copilot", "omp"]
 
     private enum Key {
         static let bindHostOverride = "daemon.bindHostOverride"
@@ -26,6 +27,7 @@ struct DaemonLaunchConfig: Equatable {
         static let agentCommandTemplate = "daemon.agentCommandTemplate"
         static let routerBaseURL = "daemon.routerBaseURL"
         static let anthropicAPIKey = "daemon.anthropicAPIKey"
+        static let harnessPaths = "daemon.harnessPaths"
     }
 
     var bindHostOverride: String?
@@ -33,19 +35,22 @@ struct DaemonLaunchConfig: Equatable {
     var agentCommandTemplate: String
     var routerBaseURL: String
     var anthropicAPIKey: String
+    var harnessPaths: [String: String]
 
     init(
         bindHostOverride: String? = nil,
         port: Int = Self.defaultPort,
         agentCommandTemplate: String = Self.defaultAgentCommandTemplate,
         routerBaseURL: String = Self.defaultRouterBaseURL,
-        anthropicAPIKey: String = Self.defaultAnthropicAPIKey
+        anthropicAPIKey: String = Self.defaultAnthropicAPIKey,
+        harnessPaths: [String: String] = [:]
     ) {
         self.bindHostOverride = Self.normalized(bindHostOverride)
         self.port = port > 0 ? port : Self.defaultPort
         self.agentCommandTemplate = agentCommandTemplate
         self.routerBaseURL = routerBaseURL
         self.anthropicAPIKey = anthropicAPIKey
+        self.harnessPaths = harnessPaths
     }
 
     init(defaults: UserDefaults) {
@@ -56,7 +61,8 @@ struct DaemonLaunchConfig: Equatable {
             port: storedPort > 0 ? storedPort : Self.defaultPort,
             agentCommandTemplate: defaults.string(forKey: Key.agentCommandTemplate) ?? Self.defaultAgentCommandTemplate,
             routerBaseURL: defaults.string(forKey: Key.routerBaseURL) ?? Self.defaultRouterBaseURL,
-            anthropicAPIKey: defaults.string(forKey: Key.anthropicAPIKey) ?? Self.defaultAnthropicAPIKey
+            anthropicAPIKey: defaults.string(forKey: Key.anthropicAPIKey) ?? Self.defaultAnthropicAPIKey,
+            harnessPaths: defaults.dictionary(forKey: Key.harnessPaths) as? [String: String] ?? [:]
         )
     }
 
@@ -70,6 +76,7 @@ struct DaemonLaunchConfig: Equatable {
         defaults.set(agentCommandTemplate, forKey: Key.agentCommandTemplate)
         defaults.set(routerBaseURL, forKey: Key.routerBaseURL)
         defaults.set(anthropicAPIKey, forKey: Key.anthropicAPIKey)
+        defaults.set(harnessPaths, forKey: Key.harnessPaths)
     }
 
     func processEnvironment(
@@ -85,6 +92,9 @@ struct DaemonLaunchConfig: Equatable {
             environment["RELAY_CLAUDE_STREAMING"] = "1"
         } else {
             environment.removeValue(forKey: "RELAY_CLAUDE_STREAMING")
+        }
+        for id in Self.harnessIDs {
+            if let path = Self.normalized(harnessPaths[id]) { environment["RELAY_HARNESS_\(id.uppercased())_PATH"] = path }
         }
         environment["RELAY_ROUTER_BASE_URL"] = routerBaseURL
         environment["ANTHROPIC_API_KEY"] = anthropicAPIKey

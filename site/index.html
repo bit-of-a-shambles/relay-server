@@ -28,7 +28,7 @@
         <p class="eyebrow">A local-first mobile remote</p>
         <h1 id="hero-title">Relay</h1>
         <p class="hero-tagline">Your coding agent, in your pocket.</p>
-        <p class="lede">Relay keeps your repositories, credentials, and session history on your Mac. Connect your iPhone to send work, inspect diffs, and check tests from anywhere. Your chosen model provider processes the requests your Mac sends to it.</p>
+        <p class="lede">Relay keeps your repositories, credentials, and session history on your Mac. Connect your iPhone to send work, choose a compatible coding harness and model source, and follow agent activity from anywhere. Your chosen model provider processes the requests your Mac sends to it.</p>
         <div class="hero-actions">
           <a class="button" href="https://github.com/bit-of-a-shambles/relay-server">View the Mac companion</a>
           <a class="button secondary" href="#get-relay">App Store coming soon</a>
@@ -43,7 +43,7 @@
         <p class="section-intro">Relay keeps the Mac as the source of truth and gives you a focused remote control from your iPhone.</p>
         <div class="three-up">
           <article class="feature"><p class="step">01 / PAIR</p><h3>Connect your devices</h3><p>Pair the iOS app with the Relay daemon running on your Mac over your local network or Tailscale.</p></article>
-          <article class="feature"><p class="step">02 / WORK</p><h3>Choose a repository</h3><p>Send a prompt to the coding agent working in your repository, with your local tools and credentials in place.</p></article>
+          <article class="feature"><p class="step">02 / WORK</p><h3>Choose a thread and harness</h3><p>Use an installed coding harness with local models, OpenRouter or Doubleword where compatible. Your Mac runs the tools and keeps provider credentials.</p></article>
           <article class="feature"><p class="step">03 / REVIEW</p><h3>Review from anywhere</h3><p>Read the response, inspect diffs, and check test output before you approve the work.</p></article>
         </div>
       </div>
@@ -55,14 +55,14 @@
       <p class="section-intro">Relay Pro is an optional Apple subscription for app features. It does not include API credits or model access.</p>
       <div class="pricing">
         <article class="price-card"><p class="price-label">Free</p><h3>Try Relay</h3><p>Pair your devices and bring your coding workflow to your phone.</p><ul><li>Up to 2 repositories</li><li>50 messages per day</li><li>30-day stats history</li><li>Review diffs and test output</li></ul></article>
-        <article class="price-card pro"><p class="price-label">Relay Pro</p><h3>$9.99 monthly or $79.99 yearly</h3><p>Both plans include a 7-day trial for eligible new subscribers. Prices are localized by Apple.</p><ul><li>Unlimited repositories</li><li>Unlimited messages</li><li>Custom endpoints</li><li>Full savings history</li></ul></article>
+        <article class="price-card pro"><p class="price-label">Relay Pro</p><h3>$9.99 monthly or $79.99 yearly</h3><p>Both plans include a 7-day trial for eligible new subscribers. Prices are localized by Apple.</p><ul><li>Unlimited repositories</li><li>Unlimited messages</li><li>Full savings history</li></ul></article>
       </div>
     </section>
 
     <section class="band" id="get-relay" aria-labelledby="install-title">
       <div class="section-inner install">
-        <div><p class="section-kicker">Mac companion</p><h2 id="install-title">Install the daemon first.</h2><p class="section-intro">Relay routes requests from your Mac-side daemon. Source code, local credentials, and provider keys are not uploaded to Relay servers. The Homebrew package will be available at launch.</p><pre class="code-block"><code>brew install bit-of-a-shambles/tap/relay</code></pre></div>
-        <div class="badge-placeholder"><strong>Coming to the App Store</strong>The iPhone app and Mac companion will launch together.</div>
+        <div><p class="section-kicker">Mac companion</p><h2 id="install-title">Install the daemon first.</h2><p class="section-intro">Relay routes requests from your Mac-side daemon. Source code, local credentials, and provider keys are not uploaded to Relay servers. Install the current server from source using Node.js, Ruby and Bundler. Follow the repository guide for setup, provider keys and Tailscale pairing.</p><pre class="code-block"><code>git clone https://github.com/bit-of-a-shambles/relay-server.git</code></pre><p><a class="button" href="https://github.com/bit-of-a-shambles/relay-server#install-from-source">Mac installation guide</a></p></div>
+        <div class="badge-placeholder"><strong>Coming to the App Store</strong>The Mac server is available from source. The iPhone app is being prepared for review.</div>
       </div>
     </section>
   </main>

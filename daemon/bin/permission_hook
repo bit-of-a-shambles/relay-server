@@ -1,0 +1,13 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Claude Code PreToolUse hook entry point (M87). Invoked by the `claude` CLI
+# directly (bare `ruby`, no Bundler context) via the per-run settings file
+# SessionRunner.write_permission_hook_settings! generates. All the logic
+# lives in RelayDaemon::PermissionHook so it can be required and unit tested
+# without executing this script.
+
+require "json"
+require_relative "../lib/relay_daemon/permission_hook"
+
+puts JSON.generate(RelayDaemon::PermissionHook.decide(raw_stdin: STDIN.read, env: ENV.to_h))

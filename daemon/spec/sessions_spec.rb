@@ -5,6 +5,7 @@ require "relay_daemon/app"
 require "relay_daemon/config"
 require "relay_daemon/db"
 require "relay_daemon/git"
+require "relay_daemon/permission_request_registry"
 require "relay_daemon/repo_store"
 require "relay_daemon/session_store"
 
@@ -53,6 +54,9 @@ RSpec.describe "Sessions API" do
     # A provider store from another spec file may still be set on the
     # shared Sinatra settings and its connection since closed; this file's
     # routing-config writes don't need providers, so keep it unset.
+    RelayDaemon::App.set(:source_catalog, nil)
+    RelayDaemon::App.set(:harness_catalog, nil)
+    RelayDaemon::App.set(:approval_settings_store, nil)
     RelayDaemon::App.set(:provider_store, nil)
   end
 
@@ -93,7 +97,233 @@ RSpec.describe "Sessions API" do
     id
   end
 
+  describe "execution configuration dispatch" do
+    it "rejects unsupported harnesses, providers and modes before recording or running a message" do
+      [{ "harnessId" => "codex" }, { "providerId" => "local" },
+       { "providerId" => "doubleword", "inferenceMode" => "async" }].each do |execution|
+        session = session_store.create(repo: repo, worktrees_dir: worktrees_dir, execution: execution)
+        post "/sessions/#{session['id']}/messages", { content: "must not run" }.to_json,
+             { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+        expect(last_response.status).to eq(503)
+        expect(JSON.parse(last_response.body)["error"]).to include("not yet supported")
+        expect(message_store.list_for_session(session["id"])).to be_empty
+        expect(File.exist?(File.join(worktrees_dir, session["id"], "session_agent_runs.txt"))).to be false
+        expect(RelayDaemon::SessionRunner.running?(session["id"])).to be false
+      end
+    end
+
+    it "uses the saved model unless this turn specifies an override" do
+      session = session_store.create(repo: repo, worktrees_dir: worktrees_dir, execution: { "modelId" => "vendor/saved" })
+      [nil, "vendor/override"].each_with_index do |override, index|
+        post "/sessions/#{session['id']}/messages", { content: "pick model", modelOverride: override }.to_json,
+             { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+        expect(last_response.status).to eq(202)
+        messages = wait_for_messages(session["id"], (index + 1) * 2)
+        expect(messages.last["content"]).to include("model=#{override || 'vendor/saved'}")
+        deadline = Time.now + 5
+        sleep 0.01 while RelayDaemon::SessionRunner.running?(session["id"]) && Time.now < deadline
+      end
+    end
+  end
+
+  describe "Codex execution" do
+    def configure_codex(mode: "ask_on_sensitive")
+      script = File.join(Dir.mktmpdir, "codex")
+      File.write(script, "#!#{RbConfig.ruby}\n" + File.read(File.expand_path("support/fake_codex.rb", __dir__)))
+      File.chmod(0o755, script)
+      catalog = instance_double(RelayDaemon::HarnessCatalog, catalog: [{ "id" => "codex", "status" => "ready", "path" => script }])
+      RelayDaemon::App.set(:harness_catalog, catalog)
+      RelayDaemon::App.set(:approval_settings_store, instance_double(RelayDaemon::ApprovalSettingsStore, mode: mode))
+      catalog
+    end
+
+    it "runs, resumes and cancels a fake App Server through the real process runner" do
+      configure_codex
+      session = session_store.create(repo: repo, worktrees_dir: worktrees_dir, execution: { "harnessId" => "codex", "providerId" => "native" })
+      expect { session_store.bind_harness_session("missing", "native") }.to raise_error(ArgumentError)
+      expect { session_store.bind_harness_session(session["id"], " ") }.to raise_error(ArgumentError)
+      ["first", "second"].each_with_index do |content, index|
+        post "/sessions/#{session['id']}/messages", { content: content }.to_json, { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+        expect(last_response.status).to eq(202)
+        expect(wait_for_messages(session["id"], (index + 1) * 2).last["content"]).to eq("Codex fixture reply")
+        deadline = Time.now + 5
+        sleep 0.01 while RelayDaemon::SessionRunner.running?(session["id"]) && Time.now < deadline
+      end
+      expect(session_store.find(session["id"])["harnessSessionId"]).to eq("fixture-native-thread")
+      requests = File.readlines(File.join(worktrees_dir, session["id"], "codex_requests.jsonl")).map { |line| JSON.parse(line) }
+      expect(requests.map { |request| request["method"] }).to include("thread/start", "thread/resume")
+      post "/sessions/#{session['id']}/messages", { content: "wait" }.to_json, { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+      sleep 0.2
+      post "/sessions/#{session['id']}/stop", "", auth_headers
+      expect(last_response.status).to eq(202)
+      expect(wait_for_messages(session["id"], 6).last["content"]).to include("Stopped")
+    end
+
+    it "routes Doubleword async turns through the async Responses path" do
+      configure_codex
+      RelayDaemon::App.set(:source_catalog, instance_double(RelayDaemon::SourceCatalog, catalog: [{ "providerId" => "doubleword", "status" => "ready", "models" => ["coder"] }]))
+      session = session_store.create(repo: repo, worktrees_dir: worktrees_dir, execution: { "harnessId" => "codex", "providerId" => "doubleword", "inferenceMode" => "async" })
+      post "/sessions/#{session['id']}/messages", { content: "async" }.to_json, { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+      expect(last_response.status).to eq(202)
+      expect(wait_for_messages(session["id"], 2).last["content"]).to eq("Codex fixture reply")
+      base = File.read(File.join(worktrees_dir, session["id"], "codex_router_base.txt"))
+      expect(base).to include("/api/async/session/#{session['id']}/run/")
+    end
+
+    it "rejects unsupported permission modes and provider combinations" do
+      configure_codex(mode: "ask_every_time")
+      session = session_store.create(repo: repo, worktrees_dir: worktrees_dir, execution: { "harnessId" => "codex" })
+      post "/sessions/#{session['id']}/messages", { content: "no" }.to_json, { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+      expect(last_response.status).to eq(422)
+      configure_codex
+      other = session_store.create(repo: repo, worktrees_dir: worktrees_dir, execution: { "harnessId" => "codex", "providerId" => "ollama" })
+      post "/sessions/#{other['id']}/messages", { content: "no" }.to_json, { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+      expect(last_response.status).to eq(422)
+    end
+
+    it "pins configured sources and refuses empty or cross-provider model selections" do
+      source = { "providerId" => "ollama", "status" => "ready", "models" => ["coder"] }
+      RelayDaemon::App.set(:source_catalog, instance_double(RelayDaemon::SourceCatalog, catalog: [source]))
+      session = session_store.create(repo: repo, worktrees_dir: worktrees_dir, execution: { "providerId" => "ollama" })
+      [nil, "ollama::coder"].each_with_index do |model, index|
+        post "/sessions/#{session['id']}/messages", { content: "local", modelOverride: model }.to_json, { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+        expect(last_response.status).to eq(202)
+        expect(wait_for_messages(session["id"], (index + 1) * 2).last["content"]).to include("model=ollama::coder")
+        deadline = Time.now + 5
+        sleep 0.01 while RelayDaemon::SessionRunner.running?(session["id"]) && Time.now < deadline
+      end
+      post "/sessions/#{session['id']}/messages", { content: "no", modelOverride: "cloud::other" }.to_json, { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+      expect(last_response.status).to eq(422)
+      source["models"] = []
+      post "/sessions/#{session['id']}/messages", { content: "no" }.to_json, { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+      expect(last_response.status).to eq(422)
+    end
+  end
+
+  it "runs and resumes Copilot ACP with scoped BYOK configuration and cancellation" do
+    script = File.join(Dir.mktmpdir, "copilot")
+    File.write(script, "#!#{RbConfig.ruby}\n" + File.read(File.expand_path("support/fake_copilot.rb", __dir__)))
+    File.chmod(0o755, script)
+    RelayDaemon::App.set(:harness_catalog, instance_double(RelayDaemon::HarnessCatalog, catalog: [{ "id" => "copilot", "status" => "ready", "path" => script }]))
+    RelayDaemon::App.set(:source_catalog, instance_double(RelayDaemon::SourceCatalog, catalog: [{ "providerId" => "ollama", "status" => "ready", "models" => ["coder"] }]))
+    session = session_store.create(repo: repo, worktrees_dir: worktrees_dir, execution: { "harnessId" => "copilot", "providerId" => "ollama" })
+    ["first", "second"].each_with_index do |content, index|
+      post "/sessions/#{session['id']}/messages", { content: content }.to_json, { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+      expect(last_response.status).to eq(202)
+      expect(wait_for_messages(session["id"], (index + 1) * 2).last["content"]).to eq("Copilot fixture reply")
+      deadline = Time.now + 5
+      sleep 0.01 while RelayDaemon::SessionRunner.running?(session["id"]) && Time.now < deadline
+    end
+    expect(session_store.find(session["id"])["harnessSessionId"]).to eq("copilot-fixture-session")
+    workspace = File.join(worktrees_dir, session["id"])
+    requests = File.readlines(File.join(workspace, "copilot_requests.jsonl")).map { |line| JSON.parse(line) }
+    expect(requests.map { |request| request["method"] }).to include("session/new", "session/load")
+    expect(JSON.parse(File.read(File.join(workspace, "copilot_environment.json")))).to include("COPILOT_MODEL" => "ollama::coder")
+    post "/sessions/#{session['id']}/messages", { content: "wait" }.to_json, { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+    sleep 0.2
+    post "/sessions/#{session['id']}/stop", "", auth_headers
+    expect(last_response.status).to eq(202)
+    expect(wait_for_messages(session["id"], 6).last["content"]).to include("Stopped")
+  end
+
+  it "runs, resumes and stops Gemini while enforcing native-only explicit full-auto" do
+    script = File.join(Dir.mktmpdir, "gemini")
+    File.write(script, "#!#{RbConfig.ruby}\n" + File.read(File.expand_path("support/fake_gemini.rb", __dir__)))
+    File.chmod(0o755, script)
+    RelayDaemon::App.set(:harness_catalog, instance_double(RelayDaemon::HarnessCatalog, catalog: [{ "id" => "gemini", "status" => "ready", "path" => script }]))
+    approvals = RelayDaemon::ApprovalSettingsStore.new(db)
+    RelayDaemon::App.set(:approval_settings_store, approvals)
+    session = session_store.create(repo: repo, worktrees_dir: worktrees_dir, execution: { "harnessId" => "gemini", "providerId" => "native", "modelId" => "gemini-test" })
+    post "/sessions/#{session['id']}/messages", { content: "first" }.to_json, { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+    expect(last_response.status).to eq(422)
+    approvals.update_mode!("full_auto")
+    wrong = session_store.create(repo: repo, worktrees_dir: worktrees_dir, execution: { "harnessId" => "gemini", "providerId" => "openrouter" })
+    post "/sessions/#{wrong['id']}/messages", { content: "first" }.to_json, { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+    expect(last_response.status).to eq(422)
+    ["first", "second"].each_with_index do |content, index|
+      post "/sessions/#{session['id']}/messages", { content: content }.to_json, { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+      expect(last_response.status).to eq(202)
+      expect(wait_for_messages(session["id"], (index + 1) * 2).last["content"]).to eq("Gemini fixture reply")
+      deadline = Time.now + 5
+      sleep 0.01 while RelayDaemon::SessionRunner.running?(session["id"]) && Time.now < deadline
+    end
+    args = File.readlines(File.join(worktrees_dir, session["id"], "gemini_arguments.jsonl")).map { |line| JSON.parse(line) }
+    expect(args.last).to include("--resume", "gemini-fixture-session", "--model", "gemini-test")
+    post "/sessions/#{session['id']}/messages", { content: "wait" }.to_json, { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+    sleep 0.2
+    post "/sessions/#{session['id']}/stop", "", auth_headers
+    expect(last_response.status).to eq(202)
+    expect(wait_for_messages(session["id"], 6).last["content"]).to include("Stopped")
+  end
+
+  it "runs, resumes and stops Oh My Pi without changing global provider configuration" do
+    script = File.join(Dir.mktmpdir, "omp")
+    File.write(script, "#!#{RbConfig.ruby}\n" + File.read(File.expand_path("support/fake_omp.rb", __dir__)))
+    File.chmod(0o755, script)
+    RelayDaemon::App.set(:harness_catalog, instance_double(RelayDaemon::HarnessCatalog, catalog: [{ "id" => "omp", "status" => "ready", "path" => script }]))
+    approvals = RelayDaemon::ApprovalSettingsStore.new(db)
+    RelayDaemon::App.set(:approval_settings_store, approvals)
+    session = session_store.create(repo: repo, worktrees_dir: worktrees_dir, execution: { "harnessId" => "omp", "providerId" => "native" })
+    post "/sessions/#{session['id']}/messages", { content: "first" }.to_json, { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+    expect(last_response.status).to eq(422)
+    approvals.update_mode!("full_auto")
+    ["first", "second"].each_with_index do |content, index|
+      post "/sessions/#{session['id']}/messages", { content: content }.to_json, { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+      expect(last_response.status).to eq(202)
+      expect(wait_for_messages(session["id"], (index + 1) * 2).last["content"]).to eq("OMP fixture reply")
+      deadline = Time.now + 5
+      sleep 0.01 while RelayDaemon::SessionRunner.running?(session["id"]) && Time.now < deadline
+    end
+    args = File.readlines(File.join(worktrees_dir, session["id"], "omp_arguments.jsonl")).map { |line| JSON.parse(line) }
+    expect(args.last).to include("--resume", "/fixture/omp-native.jsonl")
+    post "/sessions/#{session['id']}/messages", { content: "wait" }.to_json, { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+    sleep 0.2
+    post "/sessions/#{session['id']}/stop", "", auth_headers
+    expect(last_response.status).to eq(202)
+    expect(wait_for_messages(session["id"], 6).last["content"]).to include("Stopped")
+  end
+
+  it "pins explicitly selected OpenRouter threads while retaining legacy custom overrides" do
+    explicit = session_store.create(repo: repo, worktrees_dir: worktrees_dir, execution: {})
+    expect(explicit["executionExplicit"]).to be true
+    post "/sessions/#{explicit['id']}/messages", { content: "stay here", modelOverride: "other::coder" }.to_json,
+      { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+    expect(last_response.status).to eq(422)
+    expect(message_store.list_for_session(explicit["id"])).to be_empty
+    legacy = session_store.create(repo: repo, worktrees_dir: worktrees_dir)
+    expect(legacy["executionExplicit"]).to be false
+  end
+
   describe "POST /sessions" do
+    it "opens a plain folder, runs the agent and tests there, and closes without deleting files" do
+      folder = Dir.mktmpdir
+      folder_repo = repo_store.create(path: folder, test_command: "test -f session_agent_runs.txt")
+      post_session(repoId: folder_repo["id"])
+      expect(last_response.status).to eq(201)
+      session = JSON.parse(last_response.body)
+      expect(session["branch"]).to eq("")
+      post "/sessions/#{session['id']}/messages", { content: "edit folder", modelOverride: "vendor/new-model" }.to_json,
+           { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+      expect(last_response.status).to eq(202)
+      wait_for_messages(session["id"], 2)
+      deadline = Time.now + 5
+      sleep 0.05 while RelayDaemon::SessionRunner.running?(session["id"]) && Time.now < deadline
+      expect(File.exist?(File.join(folder, "session_agent_runs.txt"))).to be true
+      get "/sessions/#{session['id']}/diff", {}, auth_headers
+      expect(last_response.status).to eq(200)
+      expect(JSON.parse(last_response.body)).to eq([])
+      post "/sessions/#{session['id']}/test", "", auth_headers
+      expect(last_response.status).to eq(200)
+      expect(JSON.parse(last_response.body)["testsPassed"]).to be true
+      post "/sessions/#{session['id']}/approve", "", auth_headers
+      expect(last_response.status).to eq(422)
+      post "/sessions/#{session['id']}/discard", "", auth_headers
+      expect(last_response.status).to eq(200)
+      expect(File.exist?(File.join(folder, "session_agent_runs.txt"))).to be true
+      expect(File.symlink?(File.join(worktrees_dir, session["id"]))).to be false
+      expect(File.exist?(File.join(folder, ".git"))).to be false
+    end
+
     it "creates an active session and returns it" do
       post_session
       expect(last_response.status).to eq(201)
@@ -894,6 +1124,66 @@ RSpec.describe "Sessions API" do
     end
   end
 
+  describe "POST /sessions/:id/stop" do
+    before do
+      RelayDaemon::App.set(:relay_config, RelayDaemon::Config.new(
+        daemon_token: token, host: "127.0.0.1", port: 7777, db_path: db_path,
+        worktrees_dir: worktrees_dir, agent_log_dir: agent_log_dir,
+        agent_command: "ruby -e sleep(5) {prompt}",
+        routing_config_path: routing_config_path
+      ))
+    end
+
+    def post_stop(id)
+      post "/sessions/#{id}/stop", "", auth_headers
+    end
+
+    it "cancels an in-progress run and persists a clear stopped status" do
+      session = create_session
+      post "/sessions/#{session["id"]}/messages",
+           { content: "stop test" }.to_json,
+           { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+      expect(last_response.status).to eq(202)
+      Timeout.timeout(2) { Thread.pass until RelayDaemon::SessionRunner.running?(session["id"]) }
+
+      # running? flips true as soon as run_async reserves the session, which
+      # is slightly before Process.spawn registers its pid for #stop to find
+      # -- retry the stop call itself until that registration lands.
+      Timeout.timeout(2) do
+        loop do
+          post_stop(session["id"])
+          break if last_response.status == 202
+
+          sleep 0.01
+        end
+      end
+      expect(JSON.parse(last_response.body)).to eq("stopped" => true)
+
+      wait_for_messages(session["id"], 2)
+      message = message_store.list_for_session(session["id"]).last
+      expect(message["content"]).to eq("Stopped — this run was cancelled from the app.")
+    end
+
+    it "returns 409 when there is no run in progress for that session" do
+      session = create_session
+      post_stop(session["id"])
+      expect(last_response.status).to eq(409)
+    end
+
+    it "returns 404 for an unknown session" do
+      post_stop("missing")
+      expect(last_response.status).to eq(404)
+    end
+
+    it "returns 503 when the session store is not configured" do
+      session = create_session
+      RelayDaemon::App.set(:session_store, nil)
+      post_stop(session["id"])
+      expect(last_response.status).to eq(503)
+      RelayDaemon::App.set(:session_store, session_store)
+    end
+  end
+
   describe "POST /sessions/:id/discard" do
     def post_discard(id)
       post "/sessions/#{id}/discard", "", auth_headers
@@ -974,6 +1264,62 @@ RSpec.describe "Sessions API" do
       post_discard(session["id"])
       expect(last_response.status).to eq(503)
       RelayDaemon::App.set(:repo_store, repo_store)
+    end
+  end
+
+  describe "POST /sessions/:id/permission-requests/:requestId" do
+    let(:registry) { RelayDaemon::PermissionRequestRegistry.new }
+
+    before { RelayDaemon::App.set(:permission_request_registry, registry) }
+
+    def post_decision(session_id, request_id, decision)
+      post "/sessions/#{session_id}/permission-requests/#{request_id}",
+           { decision: decision }.to_json,
+           { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+    end
+
+    it "resolves a pending request and returns 204" do
+      session = create_session
+      result = nil
+      thread = Thread.new { result = registry.await("req-1", timeout_seconds: 2) }
+      Timeout.timeout(2) { Thread.pass until thread.status == "sleep" }
+
+      post_decision(session["id"], "req-1", "allow")
+      expect(last_response.status).to eq(204)
+      thread.join
+      expect(result).to eq("allow")
+    end
+
+    it "returns 409 when the request id is unknown or already resolved" do
+      session = create_session
+      post_decision(session["id"], "no-such-request", "deny")
+      expect(last_response.status).to eq(409)
+    end
+
+    it "returns 404 for an unknown session" do
+      post_decision("nonexistent-session", "req-1", "allow")
+      expect(last_response.status).to eq(404)
+    end
+
+    it "returns 422 for an invalid decision" do
+      session = create_session
+      post_decision(session["id"], "req-1", "maybe")
+      expect(last_response.status).to eq(422)
+    end
+
+    it "returns 400 for invalid JSON" do
+      session = create_session
+      post "/sessions/#{session["id"]}/permission-requests/req-1", "not json",
+           { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+      expect(last_response.status).to eq(400)
+    end
+
+    it "returns 503 when the session store is not configured" do
+      session = create_session
+      RelayDaemon::App.set(:session_store, nil)
+      post_decision(session["id"], "req-1", "allow")
+      expect(last_response.status).to eq(503)
+      RelayDaemon::App.set(:session_store, session_store)
     end
   end
 end

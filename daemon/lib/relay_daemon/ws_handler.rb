@@ -25,6 +25,7 @@ module RelayDaemon
       end
 
       sub_id = bus.subscribe { |event| ws.send(JSON.generate(event)) }
+      ws.on(:open) { ws.send(JSON.generate({ type: "connection.ready", payload: {} })) }
       ws.on(:close) { bus.unsubscribe(sub_id) }
     end
 
