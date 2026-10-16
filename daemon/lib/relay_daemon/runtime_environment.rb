@@ -34,6 +34,18 @@ module RelayDaemon
         env["RELAY_LLM_CALL_SINK_TOKEN"] = internal_token
       end
 
+      permission_sink_url = present(env["RELAY_PERMISSION_SINK_URL"])
+      permission_sink_token = present(env["RELAY_PERMISSION_SINK_TOKEN"])
+      if permission_sink_url.nil? != permission_sink_token.nil?
+        raise ArgumentError, "RELAY_PERMISSION_SINK_URL and RELAY_PERMISSION_SINK_TOKEN must be set together"
+      end
+
+      if permission_sink_url.nil?
+        port = present(env["RELAY_DAEMON_PORT"]) || "7777"
+        env["RELAY_PERMISSION_SINK_URL"] = "http://127.0.0.1:#{port}/internal/permission-requests"
+        env["RELAY_PERMISSION_SINK_TOKEN"] = internal_token
+      end
+
       env
     end
 

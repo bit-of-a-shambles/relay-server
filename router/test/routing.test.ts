@@ -20,6 +20,16 @@ import {
 } from "../src/routing.js";
 import type { AnthropicMessagesRequest } from "../src/types.js";
 
+describe("OpenRouter catalog selection", () => {
+  it("forwards a model outside the routing tiers exactly, including free and dated variants", () => {
+    for (const model of ["vendor/new-model", "vendor/new-model:free", "vendor/new-model-20261005"]) {
+      expect(chooseRoute(request({ model, metadata: { qualityDial: 0 } }), DEFAULT_ROUTING_CONFIG, "retry")).toMatchObject({
+        requestedModel: model, routeTarget: model, routedModel: model
+      });
+    }
+  });
+});
+
 describe("routing", () => {
   it("uses default routing when no config path is provided", () => {
     expect(createRoutingConfigLoader(undefined).load()).toEqual(DEFAULT_ROUTING_CONFIG);

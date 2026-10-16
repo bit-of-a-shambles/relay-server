@@ -7,6 +7,7 @@ require "time"
 require "sorbet-runtime"
 require_relative "db"
 require_relative "git"
+require_relative "execution_config"
 
 module RelayDaemon
   class SessionStore
@@ -23,10 +24,12 @@ module RelayDaemon
       params(
         repo: T::Hash[String, T.untyped],
         worktrees_dir: String,
-        id: T.nilable(String)
+        id: T.nilable(String),
+        execution: T.nilable(T::Hash[String, T.untyped])
       ).returns(T::Hash[String, T.untyped])
     end
-    def create(repo:, worktrees_dir:, id: nil)
+    def create(repo:, worktrees_dir:, id: nil, execution: nil)
+      config = ExecutionConfig.validate(execution || ExecutionConfig.new(@db).defaults)
       id ||= SecureRandom.uuid
       repo_id = Integer(repo.fetch("id"))
       repo_path = String(repo.fetch("path"))
@@ -34,18 +37,31 @@ module RelayDaemon
         raise ArgumentError, "repo not found"
       end
 
-      branch = "relay/session/#{id}"
-      base_commit = Git.new(repo_path).head_sha
+      git = Git.new(repo_path)
+      base_commit = if File.exist?(File.join(repo_path, ".git")) && git.repo?
+                      begin
+                        git.head_sha
+                      rescue Git::GitError
+                        "" # An empty Git repository can still be used as a folder.
+                      end
+                    else
+                      ""
+                    end
+      branch = base_commit.empty? ? "" : "relay/session/#{id}"
       now = Time.now.utc.iso8601
       worktree_path = File.join(worktrees_dir, id)
 
       FileUtils.mkdir_p(worktrees_dir)
-      Git.new(repo_path).worktree_add(worktree_path, branch: branch)
+      if base_commit.empty?
+        File.symlink(repo_path, worktree_path)
+      else
+        git.worktree_add(worktree_path, branch: branch)
+      end
 
       @db.connection.execute(
-        "INSERT INTO chat_sessions (id, repo_id, branch, base_commit, status, created_at, title)
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
-        [id, repo_id, branch, base_commit, "active", now, nil]
+        "INSERT INTO chat_sessions (id, repo_id, branch, base_commit, status, created_at, title, execution_config, execution_explicit)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [id, repo_id, branch, base_commit, "active", now, nil, JSON.generate(config), execution.nil? ? 0 : 1]
       )
 
       T.must(find(id))
@@ -54,7 +70,7 @@ module RelayDaemon
     sig { params(id: String).returns(T.nilable(T::Hash[String, T.untyped])) }
     def find(id)
       row = @db.connection.get_first_row(
-        "SELECT id, repo_id, branch, base_commit, status, created_at, last_message_at, title
+        "SELECT id, repo_id, branch, base_commit, status, created_at, last_message_at, title, execution_config, harness_session_id, execution_explicit
          FROM chat_sessions WHERE id = ?",
         [id]
       )
@@ -64,7 +80,7 @@ module RelayDaemon
     sig { params(repo_id: Integer).returns(T.nilable(T::Hash[String, T.untyped])) }
     def active_for_repo(repo_id)
       row = @db.connection.get_first_row(
-        "SELECT id, repo_id, branch, base_commit, status, created_at, last_message_at, title
+        "SELECT id, repo_id, branch, base_commit, status, created_at, last_message_at, title, execution_config, harness_session_id, execution_explicit
          FROM chat_sessions WHERE repo_id = ? AND status = 'active'
          ORDER BY created_at ASC LIMIT 1",
         [repo_id]
@@ -79,7 +95,7 @@ module RelayDaemon
     def list_for_repo(repo_id, active: true)
       status_clause = active ? " AND status = 'active'" : ""
       @db.connection.execute(
-        "SELECT id, repo_id, branch, base_commit, status, created_at, last_message_at, title
+        "SELECT id, repo_id, branch, base_commit, status, created_at, last_message_at, title, execution_config, harness_session_id, execution_explicit
          FROM chat_sessions
          WHERE repo_id = ?#{status_clause}
          ORDER BY COALESCE(last_message_at, created_at) DESC, created_at DESC, id DESC",
@@ -113,6 +129,14 @@ module RelayDaemon
         "UPDATE chat_sessions SET title = ? WHERE id = ? AND title IS NULL",
         [normalized, id]
       )
+    end
+
+    sig { params(id: String, native_id: String).void }
+    def bind_harness_session(id, native_id)
+      raise ArgumentError, "native session ID must not be blank" if native_id.strip.empty?
+      raise ArgumentError, "session not found" if find(id).nil?
+
+      @db.connection.execute("UPDATE chat_sessions SET harness_session_id = ? WHERE id = ?", [native_id, id])
     end
 
     sig { params(id: String, base_commit: String).void }
@@ -154,7 +178,10 @@ module RelayDaemon
         "status" => row["status"],
         "createdAt" => row["created_at"],
         "lastMessageAt" => row["last_message_at"],
-        "title" => row["title"]
+        "title" => row["title"],
+        "execution" => row["execution_config"].nil? ? ExecutionConfig::LEGACY.dup : JSON.parse(row["execution_config"]),
+        "harnessSessionId" => row["harness_session_id"],
+        "executionExplicit" => row["execution_explicit"] == 1
       }
     end
 

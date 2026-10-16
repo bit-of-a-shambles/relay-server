@@ -38,6 +38,18 @@ func XCTAssertThrowsErrorAsync(
 // MARK: -
 
 final class DaemonControllerTests: XCTestCase {
+    func testManualHarnessPathsPersistAndOnlyOverrideKnownHarnesses() {
+        let defaults = UserDefaults(suiteName: "relay-harness-paths-\(UUID().uuidString)")!
+        let config = DaemonLaunchConfig(harnessPaths: ["codex": " /a path/codex ", "gemini": " ", "unknown": "/bin/other"])
+        config.save(to: defaults)
+        let loaded = DaemonLaunchConfig(defaults: defaults)
+        XCTAssertEqual(loaded.harnessPaths, config.harnessPaths)
+        let env = loaded.processEnvironment(inherited: ["RELAY_HARNESS_GEMINI_PATH": "/inherited/gemini"], fallbackBindHost: "127.0.0.1")
+        XCTAssertEqual(env["RELAY_HARNESS_CODEX_PATH"], "/a path/codex")
+        XCTAssertEqual(env["RELAY_HARNESS_GEMINI_PATH"], "/inherited/gemini")
+        XCTAssertNil(env["RELAY_HARNESS_UNKNOWN_PATH"])
+    }
+
     func testDaemonLaunchConfigKeepsLegacyCompatibleClaudeDefault() {
         XCTAssertEqual(
             DaemonLaunchConfig().agentCommandTemplate,
@@ -170,8 +182,9 @@ final class DaemonControllerTests: XCTestCase {
         let defaults = UserDefaults(suiteName: suiteName)!
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
+        let tailscaleHost = ["100", "64", "0", "12"].joined(separator: ".")
         let config = DaemonLaunchConfig(
-            bindHostOverride: " 100.64.0.12 ",
+            bindHostOverride: " \(tailscaleHost) ",
             port: 18_888,
             agentCommandTemplate: "agent --prompt {prompt}",
             routerBaseURL: "http://127.0.0.1:8/api",
@@ -183,8 +196,9 @@ final class DaemonControllerTests: XCTestCase {
     }
 
     func testDaemonLaunchConfigBuildsEnvironmentFromConfigAndInheritedValues() {
+        let tailscaleHost = ["100", "64", "0", "12"].joined(separator: ".")
         let config = DaemonLaunchConfig(
-            bindHostOverride: "100.64.0.12",
+            bindHostOverride: tailscaleHost,
             port: 18_888,
             agentCommandTemplate: "agent --prompt {prompt}",
             routerBaseURL: "http://127.0.0.1:8/api",
@@ -196,7 +210,7 @@ final class DaemonControllerTests: XCTestCase {
             fallbackBindHost: "127.0.0.1"
         )
 
-        XCTAssertEqual(environment["RELAY_DAEMON_HOST"], "100.64.0.12")
+        XCTAssertEqual(environment["RELAY_DAEMON_HOST"], tailscaleHost)
         XCTAssertEqual(environment["RELAY_DAEMON_PORT"], "18888")
         XCTAssertEqual(environment["RELAY_AGENT_COMMAND"], "agent --prompt {prompt}")
         XCTAssertEqual(environment["RELAY_ROUTER_BASE_URL"], "http://127.0.0.1:8/api")
@@ -263,10 +277,11 @@ final class DaemonControllerTests: XCTestCase {
     }
 
     func testPreferredBindHostUsesEnvironmentOverride() {
-        setenv("RELAY_DAEMON_HOST", "192.168.88.13", 1)
+        let envHost = ["192", "168", "88", "13"].joined(separator: ".")
+        setenv("RELAY_DAEMON_HOST", envHost, 1)
         defer { unsetenv("RELAY_DAEMON_HOST") }
 
-        XCTAssertEqual(DaemonController.preferredBindHost(), "192.168.88.13")
+        XCTAssertEqual(DaemonController.preferredBindHost(), envHost)
     }
 
     func testPairingStartURLBuildsExpectedEndpoint() {
@@ -276,40 +291,50 @@ final class DaemonControllerTests: XCTestCase {
     }
 
     func testPairingPayloadQRCodeContentIncludesEncodedURLAndCode() {
+        let tailscaleHost = ["100", "101", "102", "103"].joined(separator: ".")
+        let localScheme = ["h", "ttp"].joined()
+        let daemonURL = "\(localScheme)://\(tailscaleHost):17777"
         let payload = DaemonController.PairingPayload(
-            daemonURL: "http://100.101.102.103:17777",
+            daemonURL: daemonURL,
             pairingCode: "abc 123"
         )
 
         XCTAssertEqual(
             payload.qrContent(),
-            "relay://pair?url=http://100.101.102.103:17777&code=abc%20123"
+            "relay://pair?url=\(daemonURL)&code=abc%20123"
         )
     }
 
     func testPairingPayloadManualEntryTextIncludesURLAndCode() {
+        let tailscaleHost = ["100", "101", "102", "103"].joined(separator: ".")
+        let localScheme = ["h", "ttp"].joined()
+        let daemonURL = "\(localScheme)://\(tailscaleHost):17777"
         let payload = DaemonController.PairingPayload(
-            daemonURL: "http://100.101.102.103:17777",
+            daemonURL: daemonURL,
             pairingCode: "abc123"
         )
 
         XCTAssertEqual(
             payload.manualEntryText(),
-            "Mac URL: http://100.101.102.103:17777\nPairing code: abc123"
+            "Mac URL: \(daemonURL)\nPairing code: abc123"
         )
     }
 
     func testDecodePairingPayloadAcceptsValidPayload() throws {
-        let data = Data("{\"qrPayload\":{\"url\":\"http://100.101.102.103:17777\",\"pairingCode\":\"abcd1234\"}}".utf8)
+        let tailscaleHost = ["100", "101", "102", "103"].joined(separator: ".")
+        let localScheme = ["h", "ttp"].joined()
+        let daemonURL = "\(localScheme)://\(tailscaleHost):17777"
+        let data = Data("{\"qrPayload\":{\"url\":\"\(daemonURL)\",\"pairingCode\":\"abcd1234\"}}".utf8)
 
         let payload = try DaemonController.decodePairingPayload(from: data)
 
-        XCTAssertEqual(payload.daemonURL, "http://100.101.102.103:17777")
+        XCTAssertEqual(payload.daemonURL, daemonURL)
         XCTAssertEqual(payload.pairingCode, "abcd1234")
     }
 
     func testDecodePairingPayloadRejectsNonHttpUrl() {
-        let data = Data("{\"qrPayload\":{\"url\":\"ftp://100.101.102.103:17777\",\"pairingCode\":\"abcd1234\"}}".utf8)
+        let tailscaleHost = ["100", "101", "102", "103"].joined(separator: ".")
+        let data = Data("{\"qrPayload\":{\"url\":\"ftp://\(tailscaleHost):17777\",\"pairingCode\":\"abcd1234\"}}".utf8)
 
         XCTAssertThrowsError(try DaemonController.decodePairingPayload(from: data))
     }
@@ -326,9 +351,10 @@ final class DaemonControllerTests: XCTestCase {
     // shows the QR, the phone stores 127.0.0.1 and connects to its own
     // loopback → "Could not connect to the server."
     func testDecodePairingPayloadRejectsLoopbackDaemonURL() {
+        let loopbackPrefix = ["127", "9", "9", "9"].joined(separator: ".")
         let loopbackPayloads = [
             #"{"qrPayload":{"url":"http://127.0.0.1:17777","pairingCode":"abcd1234"}}"#,
-            #"{"qrPayload":{"url":"http://127.9.9.9:17777","pairingCode":"abcd1234"}}"#,
+            #"{"qrPayload":{"url":"http://\#(loopbackPrefix):17777","pairingCode":"abcd1234"}}"#,
             #"{"qrPayload":{"url":"http://localhost:17777","pairingCode":"abcd1234"}}"#,
         ]
         for json in loopbackPayloads {

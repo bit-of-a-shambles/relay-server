@@ -15,7 +15,108 @@ afterEach(async () => {
   await Promise.all(openServers.splice(0).map((server) => server.close()));
 });
 
+describe("Native harness protocols", () => {
+  it("delivers a completed Doubleword async response through the scoped Responses route", async () => {
+    const payloads: Record<string, unknown>[] = [];
+    const router = await listenRouterWithOptions({
+      routingConfigLoader: { load: () => ({ ...DEFAULT_ROUTING_CONFIG, providers: { doubleword: { baseUrl: "https://dw.invalid/v1", apiKey: "key" } } }) },
+      fetchImpl: async (_url, init) => { payloads.push(JSON.parse(init!.body as string)); return Response.json({ id: "async-id", status: "completed", model: "coder", output: [] }); }
+    });
+    openServers.push(router);
+    const result = await fetch(`${router.baseUrl}/api/async/session/s/run/r/v1/responses`, { method: "POST", body: JSON.stringify({ model: "doubleword::coder", stream: true }) });
+    expect(result.status).toBe(200);
+    expect(await result.text()).toContain("response.completed");
+    expect(payloads[0]).toMatchObject({ model: "coder", background: true, service_tier: "flex" });
+    for (const [path, model] of [["/api/async/session/s/run/r/v1/chat/completions", "doubleword::coder"], ["/api/async/v1/responses", "doubleword::coder"], ["/api/async/session/s/v1/responses", "doubleword::coder"], ["/api/async/session/s/run/r/v1/responses", "vendor/model"]]) {
+      expect((await fetch(`${router.baseUrl}${path}`, { method: "POST", body: JSON.stringify({ model }) })).status).toBe(500);
+    }
+    expect(payloads).toHaveLength(1);
+    const oldUrl = process.env.RELAY_LLM_CALL_SINK_URL, oldToken = process.env.RELAY_LLM_CALL_SINK_TOKEN;
+    try {
+      process.env.RELAY_LLM_CALL_SINK_URL = "http://daemon/internal/llm-calls";
+      process.env.RELAY_LLM_CALL_SINK_TOKEN = "token";
+      expect(defaultOptionsFromEnv().inferenceJobSink).toBeTypeOf("function");
+    } finally {
+      if (oldUrl === undefined) delete process.env.RELAY_LLM_CALL_SINK_URL; else process.env.RELAY_LLM_CALL_SINK_URL = oldUrl;
+      if (oldToken === undefined) delete process.env.RELAY_LLM_CALL_SINK_TOKEN; else process.env.RELAY_LLM_CALL_SINK_TOKEN = oldToken;
+    }
+  });
+
+  it("preserves native tools and model IDs without crossing providers", async () => {
+    const sink = new MemoryCallLogSink();
+    const upstream = await createTestServer((_request, response) => response.end(JSON.stringify({ id: "reply", model: "coder", choices: [], output: [], usage: { completion_tokens: 2, cost: 0.01 } })));
+    openServers.push(upstream);
+    const router = await listenRouterWithOptions({ callLogSink: sink, openRouterApiKey: undefined,
+      routingConfigLoader: { load: () => ({ ...DEFAULT_ROUTING_CONFIG, providers: { local: { baseUrl: upstream.baseUrl } } }) } });
+    openServers.push(router);
+    for (const protocol of ["chat/completions", "responses"]) {
+      const payload = { model: "local::coder", messages: [{ role: "tool", tool_call_id: "c", content: "ok" }], input: [{ type: "function_call_output", call_id: "c", output: "ok" }], tools: [{ type: "function", name: "read_file" }] };
+      const result = await fetch(`${router.baseUrl}/api/session/s/run/r/v1/${protocol}`, { method: "POST", body: JSON.stringify(payload) });
+      expect(result.status).toBe(200);
+      expect(await result.json()).toMatchObject({ model: "coder" });
+      expect(JSON.parse(upstream.requests.at(-1)!.body)).toEqual({ ...payload, model: "coder" });
+    }
+    expect(sink.records).toHaveLength(2);
+    expect(sink.records[0]).toMatchObject({ provider: "local", sessionId: "s", runId: "r", completionTokens: 2, costUsd: 0.01 });
+  });
+  it("preserves native SSE frames with and without named events", async () => {
+    const upstream = await createTestServer((_request, response) => response.end('event: response.output_text.delta\ndata: {"delta":"hello"}\n\ndata: {"response":{"model":"served","usage":{"output_tokens":7}}}\n\ndata: {"usage":{}}\n\ndata: not-json\n\ndata: [DONE]\n\n'));
+    openServers.push(upstream);
+    const router = await listenRouter(upstream.baseUrl);
+    openServers.push(router);
+    const response = await fetch(`${router.baseUrl}/api/v1/responses`, { method: "POST", body: JSON.stringify({ model: "vendor/model", stream: true }) });
+    expect(await response.text()).toContain('event: response.output_text.delta\ndata: {"delta":"hello"}');
+    expect(upstream.requests[0]!.headers.authorization).toBe("Bearer test-key");
+  });
+  it("rejects malformed native requests, missing credentials and invalid paths", async () => {
+    const router = await listenRouterWithOptions({ openRouterApiKey: undefined });
+    openServers.push(router);
+    for (const body of ['{}', '{"model":"vendor/model"}']) {
+      const result = await fetch(`${router.baseUrl}/api/v1/responses`, { method: "POST", body });
+      expect(result.status).toBe(500);
+    }
+    expect((await fetch(`${router.baseUrl}/bad/responses`, { method: "POST", body: '{}' })).status).toBe(404);
+    expect((await fetch(`${router.baseUrl}/api/v1/responses`)).status).toBe(404);
+  });
+  it("records upstream failures and rejects empty streams", async () => {
+    const sink = new MemoryCallLogSink();
+    let reply = new Response("offline", { status: 503 });
+    const router = await listenRouterWithOptions({ callLogSink: sink, fetchImpl: async () => reply });
+    openServers.push(router);
+    const call = () => fetch(`${router.baseUrl}/api/v1/chat/completions`, { method: "POST", body: JSON.stringify({ model: "vendor/model", stream: true }) });
+    expect((await call()).status).toBe(503);
+    expect(sink.records[0]).toMatchObject({ status: "error", errorMessage: "offline" });
+    reply = new Response(null, { status: 200 });
+    expect((await call()).status).toBe(500);
+  });
+});
+
 describe("Relay router HTTP server", () => {
+  it("sends an unlisted catalog model ID unchanged to OpenRouter and records it", async () => {
+    const model = "vendor/catalog-only:free";
+    const sink = new MemoryCallLogSink();
+    const upstream = await createTestServer((_request, response) => {
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({
+        id: "catalog-selection", model,
+        choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "Selected" } }],
+        usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 }
+      }));
+    });
+    openServers.push(upstream);
+    const router = await listenRouterWithOptions({ openRouterBaseUrl: upstream.baseUrl, callLogSink: sink });
+    openServers.push(router);
+    const response = await fetch(`${router.baseUrl}/api/v1/messages`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model, max_tokens: 100, messages: [{ role: "user", content: "Use my selected model" }] })
+    });
+    expect(response.status).toBe(200);
+    await response.json();
+    expect(JSON.parse(upstream.requests[0]!.body)).toMatchObject({ model });
+    expect(sink.records).toHaveLength(1);
+    expect(sink.records[0]).toMatchObject({ requestedModel: model, routeTarget: model, routedModel: model });
+  });
+
   it("proxies non-streaming Anthropic messages to OpenRouter chat completions", async () => {
     const upstream = await createTestServer((request, response) => {
       response.writeHead(200, { "Content-Type": "application/json" });

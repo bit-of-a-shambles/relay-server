@@ -63,10 +63,51 @@ bundle exec rspec
 | `RELAY_PUSH_ENVIRONMENT` | `production` | APNs environment: `production` or `sandbox` |
 | `RELAY_SUPERVISE_ROUTER` | `1` | Set `0` to run daemon without starting the router |
 
+## Harness and execution configuration
+
+Discovery checks `claude`, `codex`, `gemini`, `copilot` and `omp` in PATH,
+`~/.local/bin`, `~/.bun/bin`, and common Homebrew locations. Override an
+individual path with `RELAY_HARNESS_CLAUDE_PATH`, `RELAY_HARNESS_CODEX_PATH`,
+`RELAY_HARNESS_GEMINI_PATH`, `RELAY_HARNESS_COPILOT_PATH` or
+`RELAY_HARNESS_OMP_PATH`; refresh discovery after changing installations.
+A ready executable can still require its own provider sign-in.
+
+Authenticated discovery/configuration endpoints:
+
+```text
+GET  /harnesses
+POST /harnesses/refresh
+GET  /execution-defaults
+PUT  /execution-defaults
+GET  /model-sources
+POST /model-sources/refresh
+GET  /approval-settings
+PUT  /approval-settings
+```
+
+Create a session with an `execution` object containing `harnessId`,
+`providerId`, `modelId` and `inferenceMode`. The Mac validates supported
+combinations before running them. For example, `omp` with `openrouter` pins
+the chosen OpenRouter model; `codex` with `doubleword` can select `async`.
+Changing defaults affects future threads. Existing threads keep their choices.
+
+Local model discovery uses Ollama `http://127.0.0.1:11434/v1` and LM Studio
+`http://127.0.0.1:1234/v1` on the Mac. OpenRouter uses the Mac environment's
+`OPENROUTER_API_KEY`. Doubleword can use `DOUBLEWORD_API_KEY` or saved provider
+credentials. A custom endpoint must implement the protocol supported by the
+selected harness. Gemini supports native Google models only. Gemini and
+Oh My Pi require explicitly chosen `full_auto`; other harness permission
+modes are reported in `/harnesses`. Credentials are not returned in discovery.
+
+Native harness thread IDs are stored separately from Relay session IDs.
+The included `bin/harness_bridge` normalizes native protocol output;
+`bin/permission_hook` handles supported tool approvals. Both files must be
+present beside `bin/daemon` in installed runtime packages.
+
 ## Agent Command
 
 `RELAY_AGENT_COMMAND` is split into argv without a shell. When present,
-`{prompt}` is replaced with the current user message. `SessionRunner` appends
+`{prompt}` is replaced with the current user message. The legacy/custom Claude command path appends
 Claude Code session flags:
 
 - first run: `--session-id <session-uuid>`
@@ -153,12 +194,13 @@ bin/daemon revoke <full-token-or-hash-prefix>
 iPhone testing, bind to the Mac Tailscale IPv4:
 
 ```bash
-RELAY_DAEMON_HOST="$(tailscale ip -4 | head -n 1)" RELAY_DAEMON_PORT=17777 bin/daemon
+RELAY_DAEMON_HOST="$(/Applications/Tailscale.app/Contents/MacOS/Tailscale ip -4 | head -n 1)" RELAY_DAEMON_PORT=17777 bin/daemon
 ```
 
 ## WebSocket Events
 
-`GET /ws?token=<token>` streams JSON frames:
+`GET /ws?token=<token>` first emits an authenticated `connection.ready` frame,
+then streams JSON frames:
 
 ```json
 {"type":"message.created","payload":{"sessionId":"...","message":{}}}

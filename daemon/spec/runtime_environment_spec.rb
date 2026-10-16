@@ -20,7 +20,9 @@ RSpec.describe RelayDaemon::RuntimeEnvironment do
       "RELAY_INTERNAL_TOKEN" => "generated-token",
       "RELAY_ROUTING_CONFIG" => "/custom/routing.json",
       "RELAY_LLM_CALL_SINK_URL" => "http://127.0.0.1:17777/internal/llm-calls",
-      "RELAY_LLM_CALL_SINK_TOKEN" => "generated-token"
+      "RELAY_LLM_CALL_SINK_TOKEN" => "generated-token",
+      "RELAY_PERMISSION_SINK_URL" => "http://127.0.0.1:17777/internal/permission-requests",
+      "RELAY_PERMISSION_SINK_TOKEN" => "generated-token"
     )
   end
 
@@ -30,7 +32,9 @@ RSpec.describe RelayDaemon::RuntimeEnvironment do
       {
         "RELAY_INTERNAL_TOKEN" => "operator-token",
         "RELAY_LLM_CALL_SINK_URL" => "https://sink.example.test/calls",
-        "RELAY_LLM_CALL_SINK_TOKEN" => "sink-token"
+        "RELAY_LLM_CALL_SINK_TOKEN" => "sink-token",
+        "RELAY_PERMISSION_SINK_URL" => "https://sink.example.test/permissions",
+        "RELAY_PERMISSION_SINK_TOKEN" => "permission-sink-token"
       },
       home: home,
       token_generator: -> { raise "must not generate" }
@@ -39,12 +43,24 @@ RSpec.describe RelayDaemon::RuntimeEnvironment do
     expect(env["RELAY_ROUTING_CONFIG"]).to eq(File.join(home, ".relay", "routing.json"))
     expect(env["RELAY_LLM_CALL_SINK_URL"]).to eq("https://sink.example.test/calls")
     expect(env["RELAY_LLM_CALL_SINK_TOKEN"]).to eq("sink-token")
+    expect(env["RELAY_PERMISSION_SINK_URL"]).to eq("https://sink.example.test/permissions")
+    expect(env["RELAY_PERMISSION_SINK_TOKEN"]).to eq("permission-sink-token")
   end
 
   it "rejects a partial call-sink override" do
     expect do
       described_class.prepare(
         { "RELAY_LLM_CALL_SINK_URL" => "https://sink.example.test/calls" },
+        home: Dir.mktmpdir,
+        token_generator: -> { "generated-token" }
+      )
+    end.to raise_error(ArgumentError, /must be set together/)
+  end
+
+  it "rejects a partial permission-sink override" do
+    expect do
+      described_class.prepare(
+        { "RELAY_PERMISSION_SINK_TOKEN" => "permission-sink-token" },
         home: Dir.mktmpdir,
         token_generator: -> { "generated-token" }
       )
