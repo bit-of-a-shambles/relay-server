@@ -267,12 +267,15 @@ RSpec.describe "Sessions API" do
     post "/sessions/#{session['id']}/messages", { content: "first" }.to_json, { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
     expect(last_response.status).to eq(422)
     approvals.update_mode!("full_auto")
-    ["first", "second"].each_with_index do |content, index|
+    ["terminal", "legacy", "second"].each_with_index do |content, index|
       post "/sessions/#{session['id']}/messages", { content: content }.to_json, { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
       expect(last_response.status).to eq(202)
-      expect(wait_for_messages(session["id"], (index + 1) * 2).last["content"]).to eq("OMP fixture reply")
+      messages = wait_for_messages(session["id"], (index + 1) * 2)
+      expect(messages.last["content"]).to eq("OMP fixture reply")
+      expect(messages[-2]["agentRunId"]).to eq(messages.last["agentRunId"])
       deadline = Time.now + 5
       sleep 0.01 while RelayDaemon::SessionRunner.running?(session["id"]) && Time.now < deadline
+      expect(RelayDaemon::SessionRunner.running?(session["id"])).to be false
     end
     args = File.readlines(File.join(worktrees_dir, session["id"], "omp_arguments.jsonl")).map { |line| JSON.parse(line) }
     expect(args.last).to include("--resume", "/fixture/omp-native.jsonl")
@@ -280,7 +283,26 @@ RSpec.describe "Sessions API" do
     sleep 0.2
     post "/sessions/#{session['id']}/stop", "", auth_headers
     expect(last_response.status).to eq(202)
-    expect(wait_for_messages(session["id"], 6).last["content"]).to include("Stopped")
+    expect(wait_for_messages(session["id"], 8).last["content"]).to include("Stopped")
+  end
+
+  it "persists the actionable OMP credit error through the harness bridge" do
+    script = File.join(Dir.mktmpdir, "omp")
+    File.write(script, "#!#{RbConfig.ruby}\n" + File.read(File.expand_path("support/fake_omp.rb", __dir__)))
+    File.chmod(0o755, script)
+    RelayDaemon::App.set(:harness_catalog, instance_double(RelayDaemon::HarnessCatalog, catalog: [{ "id" => "omp", "status" => "ready", "path" => script }]))
+    approvals = RelayDaemon::ApprovalSettingsStore.new(db)
+    approvals.update_mode!("full_auto")
+    RelayDaemon::App.set(:approval_settings_store, approvals)
+    session = session_store.create(repo: repo, worktrees_dir: worktrees_dir, execution: { "harnessId" => "omp", "providerId" => "openrouter" })
+    post "/sessions/#{session['id']}/messages", { content: "credit limit" }.to_json, { "CONTENT_TYPE" => "application/json" }.merge(auth_headers)
+    expect(last_response.status).to eq(202)
+    reply = wait_for_messages(session["id"], 2).last["content"]
+    expect(reply).to eq("Harness failed: OpenRouter budget exhausted. [Add OpenRouter credits](https://openrouter.ai/settings/credits) to continue.")
+    expect(reply).not_to include("sign-in", "private-account", "Retry", "retry", "120")
+    deadline = Time.now + 5
+    sleep 0.01 while RelayDaemon::SessionRunner.running?(session["id"]) && Time.now < deadline
+    expect(RelayDaemon::SessionRunner.running?(session["id"])).to be false
   end
 
   it "pins explicitly selected OpenRouter threads while retaining legacy custom overrides" do

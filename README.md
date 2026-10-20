@@ -81,6 +81,11 @@ API keys and provider configuration remain on your Mac. The model provider
 you choose may process prompts, code and tool output under its own terms.
 Relay does not install the harnesses or provide model credits.
 
+Oh My Pi 17.3.5 terminal events and newer settled-turn RPC formats are supported.
+Provider errors retain useful status details with credentials redacted. Budget
+failures stop immediately without retrying another model; OpenRouter budget
+errors link to its credits settings.
+
 ## Release tooling
 
 `scripts/release.sh --dry-run vX.Y.Z` builds a runtime tarball and checksummed

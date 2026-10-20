@@ -353,6 +353,7 @@ async function executeNonStreamingWithRetry(
       lastStatus = attempt.response.status;
       lastError = errorMessage;
       await recordCall(options.callLogSink, route, route.routedModel, latencyMs, 0, null, "error", errorMessage, attribution);
+      if (lastStatus === 402) break;
       continue;
     }
 

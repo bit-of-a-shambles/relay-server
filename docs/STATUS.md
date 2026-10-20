@@ -1,12 +1,25 @@
 # Status
 
-Last updated: 2026-10-16.
+Last updated: 2026-10-21.
 
 This repository is the public, MIT-licensed extraction of Relay's router,
 daemon, menubar companion, release tooling, site, and push relay. The private
 repository retains the iOS client and full pre-split history.
 
 ## Completed
+
+- M124: Oh My Pi 17.3.5 terminal `agent_end` and newer settled-turn RPC
+  completion now request state once and persist the native session, so a
+  successful reply finishes and can be resumed. Provider failures preserve
+  useful status details while redacting credentials. Budget errors stop
+  immediately, with a trusted OpenRouter credits link where appropriate;
+  HTTP 402 never retries another model.
+- M124 validation: router build, 75 tests and 100% statements/branches/functions/
+  lines; daemon Sorbet and 513 examples with 100% line coverage; offline release
+  packaging and changed-source secret scans pass. Legacy/current completion,
+  errors, budget stops and session lifecycle have regression fixtures. The
+  pre-existing UTF-8 migration regression is preserved. No private client,
+  signing material or release records are included.
 
 - M117: current harness/provider execution APIs, all five native adapter
   fixtures, local/provider catalogs, exact per-thread execution choices,
@@ -62,6 +75,11 @@ Numbering is inherited from the private repository; gaps are private or
 iOS-only milestones.
 
 ## Next Recommended Work
+
+- Use the current default-branch source for App Review so client testing uses
+  the completion and budget-error fixes above. Real iPhone purchase/restore,
+  streamed-reply acceptance and a camera video of the iPhone interacting with
+  the Mac remain physical checks; these automated results do not establish them.
 
 - Use the source installation in README for the current runtime. Keep
   physical client purchase/restore/streaming acceptance separate from these
