@@ -39,6 +39,36 @@ Conventions used throughout:
   stops there per AGENTS.md ("Stop conditions") and reports what the user
   needs to do instead of implementing anything.
 
+### M124 — App Review companion parity and release evidence
+
+- [x] M124 complete
+
+**User priority (2026-10-20):** finish necessary App Store deployment fixes and
+Apple's checklist, including preparation of authentic hardware evidence.
+**Read:** repository `AGENTS.md`, `README.md`, `docs/STATUS.md`, the exact
+validated daemon/router completion and budget-error patch and its fixtures;
+private acceptance/recording instructions when working in the client repository.
+**Goal:** source installs used during review receive the deployed Oh My Pi
+completion/error fixes, and release readiness is supported by concrete evidence.
+**Done when:** current/legacy OMP completion, sanitized provider errors and
+immediate budget-stop behavior ship publicly with their regression fixtures;
+router build/test/100% coverage and daemon Sorbet/RSpec/100% lines pass without
+weakened gates; the offline source-package contract and secret scan pass; the
+reviewed public branch is merged. The private release receipt separately records
+signed business TestFlight delivery, binary inspection and live listing checks.
+Physical acceptance and a real camera video remain explicit owner requirements;
+no simulator, guide or plan is presented as completed physical evidence.
+**Validate:** changed public component gates, packaging and secret scan; private
+business build processing/group assignment, exact IPA and current Apple metadata.
+
+Validated on 2026-10-21: router build, 75 tests and 100% coverage in all four
+metrics; daemon Sorbet and 513 examples with 100% line coverage; offline
+source-package contract and changed-source secret scan. The existing UTF-8
+migration fix and its regression remain intact. Public release proceeds through
+the reviewed branch PR; physical client and camera checks remain separate.
+
+---
+
 ### M117 — Publish a Mac server matching the current client
 
 - [x] M117 complete

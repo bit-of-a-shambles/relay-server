@@ -411,6 +411,28 @@ describe("Relay router HTTP server", () => {
     expect(sink.records[1]?.frontierCostUsd).toBeGreaterThan(0);
   });
 
+  it("stops on a budget failure without retrying another model", async () => {
+    const sink = new MemoryCallLogSink();
+    let attempts = 0;
+    const router = await listenRouterWithOptions({
+      callLogSink: sink,
+      fetchImpl: async () => {
+        attempts += 1;
+        return Response.json({ error: { code: 402, message: "Insufficient credits" } }, { status: 402 });
+      }
+    });
+    openServers.push(router);
+    const response = await fetch(`${router.baseUrl}/api/v1/messages`, {
+      method: "POST",
+      body: JSON.stringify({ model: "claude-sonnet-4-5", max_tokens: 100, messages: [{ role: "user", content: "Stop at the budget limit" }] })
+    });
+    expect(response.status).toBe(402);
+    expect(await response.text()).toContain("Insufficient credits");
+    expect(attempts).toBe(1);
+    expect(sink.records).toHaveLength(1);
+    expect(sink.records[0]).toMatchObject({ status: "error", escalationReason: null });
+  });
+
   it("returns the final non-streaming error after retry exhaustion", async () => {
     const sink = new MemoryCallLogSink();
     const upstream = await createTestServer((request, response) => {
