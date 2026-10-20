@@ -37,7 +37,8 @@ begin
   environment.merge!(adapter.environment(provider: config[:provider], router_base: config[:router_base], model: options.fetch("model"), session_dir: options.fetch("sessionDir"))) if adapter == RelayDaemon::OmpAdapter
   Open3.popen2(environment, *command) do |writer, reader, child|
     begin
-      adapter.new.run(reader: reader, writer: writer, content: options.fetch("content"), native_id: session["harnessSessionId"],
+      instance = adapter == RelayDaemon::OmpAdapter ? adapter.new(provider: config[:provider]) : adapter.new
+      instance.run(reader: reader, writer: writer, content: options.fetch("content"), native_id: session["harnessSessionId"],
         model: options.fetch("model"), mode: mode, persist: ->(id) { store.bind_harness_session(session.fetch("id"), id) }, emit: emit, decide: decide)
     ensure
       writer.close
