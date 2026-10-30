@@ -17,6 +17,7 @@ RSpec.describe RelayDaemon::Config do
       ENV.delete("RELAY_PUSH_ENVIRONMENT")
       ENV.delete("RELAY_CLAUDE_STREAMING")
       ENV.delete("RELAY_INTERNAL_TOKEN")
+      ENV.delete("RELAY_TUNNEL_URL")
       ENV["RELAY_DAEMON_TOKEN"] = "t"
       example.run
       ENV.replace(saved)
@@ -30,6 +31,14 @@ RSpec.describe RelayDaemon::Config do
 
     it "defaults router_command to npm run start" do
       expect(described_class.from_env.router_command).to eq(["npm", "run", "start"])
+    end
+
+    it "enables the deployed encrypted cloud endpoint by default and permits opt-out/self-hosting" do
+      expect(described_class.from_env.tunnel_url).to eq(described_class::DEFAULT_TUNNEL_URL)
+      ENV["RELAY_TUNNEL_URL"] = "  "
+      expect(described_class.from_env.tunnel_url).to be_nil
+      ENV["RELAY_TUNNEL_URL"] = "wss://self-hosted.test"
+      expect(described_class.from_env.tunnel_url).to eq("wss://self-hosted.test")
     end
 
     it "enables Claude streaming by default for legacy launch environments" do

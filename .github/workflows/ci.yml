@@ -43,3 +43,25 @@ jobs:
       - name: Test
         working-directory: daemon
         run: bundle exec rspec
+
+  tunnel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: relay-tunnel/package-lock.json
+      - name: Install dependencies
+        working-directory: relay-tunnel
+        run: npm ci
+      - name: Build
+        working-directory: relay-tunnel
+        run: npm run build
+      - name: Test
+        working-directory: relay-tunnel
+        run: npm test
+      - name: Coverage
+        working-directory: relay-tunnel
+        run: npm run coverage

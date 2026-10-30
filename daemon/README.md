@@ -164,6 +164,27 @@ eval history), and leaves sibling sessions active. Discarded sessions reject
 message, test, approve, and rename mutations. Approve and discard operations
 for sessions in the same repository are serialized.
 
+## Remote access without a VPN
+
+With the updated Mac companion and iPhone app, cloud pairing works across
+separate networks, including cellular. Both peers connect outbound to a Worker;
+your Mac can remain bound to loopback. Keep the Mac awake and online.
+
+The hosted encrypted relay is enabled by default. Start/restart the daemon,
+then scan a **new** QR or paste the full private
+pairing link from `bin/daemon pair`. The URL and short code alone configure a
+direct connection. Old pairings continue working directly; re-pair to add cloud
+access. Direct LAN/Tailscale remains preferred when reachable. Set
+`RELAY_TUNNEL_URL=` to disable cloud connections, or set it to your own WSS
+origin to self-host. `RELAY_TUNNEL_STORE` optionally
+changes the mode-0600 pairing file (default `~/.relay/cloud-pairings.json`).
+
+Only routing capabilities and encrypted frames reach the Worker. QR secrets,
+daemon bearer tokens, source code and messages stay encrypted between devices.
+Do not share a QR or private pairing link. The same revocation commands below
+also revoke cloud API/event access. See [the Worker runbook](../relay-tunnel/README.md)
+for deployment, protocol details and transport size limits.
+
 ## Pairing
 
 ```bash
@@ -191,7 +212,7 @@ bin/daemon revoke <full-token-or-hash-prefix>
 ```
 
 `bin/daemon` refuses public binds unless `--unsafe` is passed. For physical
-iPhone testing, bind to the Mac Tailscale IPv4:
+direct iPhone testing with cloud disabled, bind to the Mac Tailscale IPv4:
 
 ```bash
 RELAY_DAEMON_HOST="$(/Applications/Tailscale.app/Contents/MacOS/Tailscale ip -4 | head -n 1)" RELAY_DAEMON_PORT=17777 bin/daemon

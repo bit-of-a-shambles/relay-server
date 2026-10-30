@@ -67,6 +67,7 @@ module RelayDaemon
     set :stats_db, nil        # RelayDaemon::Db instance; tests and bin/daemon inject
     set :event_bus, RelayDaemon::EventBus.new
     set :ws_upgrader, RelayDaemon::FayeUpgrader
+    set :tunnel_service, nil
     set :pairing_service, nil # RelayDaemon::PairingService; tests and bin/daemon inject
     set :push_device_store, nil # RelayDaemon::PushDeviceStore; tests and bin/daemon inject
     set :push_notifier, nil # RelayDaemon::PushNotifier; tests and bin/daemon inject
@@ -285,19 +286,22 @@ module RelayDaemon
       halt 503, JSON.generate({ error: "pairing not configured" }) if svc.nil?
 
       cfg = settings.relay_config
-      if RelayDaemon::BindSafety.loopback?(cfg.host)
+      if RelayDaemon::BindSafety.loopback?(cfg.host) && settings.tunnel_service.nil?
         halt 503, JSON.generate({
           error: "daemon is bound to loopback only; set RELAY_DAEMON_HOST to a Tailscale or LAN address and restart"
         })
       end
 
       code = svc.start_pairing
-      JSON.generate({
-        "qrPayload" => {
-          "url" => "http://#{cfg.host}:#{cfg.port}",
-          "pairingCode" => code
-        }
-      })
+      payload = { "url" => "http://#{cfg.host}:#{cfg.port}", "pairingCode" => code }
+      if settings.tunnel_service
+        begin
+          payload["relay"] = settings.tunnel_service.create(code)
+        rescue StandardError
+          halt 503, JSON.generate({ error: "Cloud pairing could not start. Check the Mac relay configuration." })
+        end
+      end
+      JSON.generate({ "qrPayload" => payload })
     end
 
     post "/pair/claim" do
@@ -317,6 +321,7 @@ module RelayDaemon
       token = svc.claim(data["pairingCode"].to_s)
       halt 401, JSON.generate({ error: "invalid pairing code" }) if token.nil?
 
+      settings.tunnel_service&.bind(data["pairingCode"].to_s, token)
       JSON.generate({ "authToken" => token })
     end
 

@@ -1,0 +1,32 @@
+{
+  "warning": "PUBLIC TEST VECTORS ONLY; never use these keys outside tests",
+  "secret": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+  "phonePrivate": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+  "phoneNonce": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=",
+  "room": "348c24427cefdd9ca72767acda636333731f3e54d9e7db2283c8677e5c1f45f9",
+  "phone": "759d71f5af387d23ebfbf04db08c0ef0a199d2370aef4dc3115bbd0c04281ad0",
+  "phoneHello": {
+    "type": "hello",
+    "public": "BG/wO5SSQc4drdQ1GeaWDgqFtBppoFwygQOqK84VlMoWPE91OlW/AdxT9sCwx+7ni0DG/30lqW4igrmJzvccFEo=",
+    "nonce": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=",
+    "proof": "Ekx/wh/0+aIb5iTQN9G2l7gXUtqI5yJgTj6Ir6BUNCw="
+  },
+  "hostHello": {
+    "type": "hello",
+    "public": "BFUPRxAD89+Xw99QaseX9nIfsaH7e49vg9IkSYplyI4kE2CT1wEuUJpzcVy9CwCjzA/0tcAbP/oZarH7MnA2uOY=",
+    "nonce": "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ=",
+    "proof": "mJnkTvP3gsVq5nZtE3NzLyKKxdVPCIeLh8LCw9B7TUA="
+  },
+  "requestPlain": "{\"kind\":\"request\",\"id\":\"fixture\",\"method\":\"POST\",\"path\":\"/fixture\",\"token\":\"private_daemon_token\",\"body\":\"private_code_marker\"}",
+  "responsePlain": "{\"kind\":\"response\",\"id\":\"fixture\",\"status\":200,\"body\":\"private_reply_marker\"}",
+  "requestFrame": {
+    "type": "data",
+    "n": 0,
+    "c": "hiNNjmTdbE7AiQm1sXtLznrSsx9GGebLp7spaXyO/UQpNV+M1XOOgKydECOKAH/7fTmFGUfUIA4revfh4Cmh9LkQpcM1DHSFExuoAaBofMZ6lKFWws6hbwzUMP2SGHvK9FvaWIzMyh+z9SDQ1gDg4FYYoZrYxWRUUZMzpC51QWFIYa8wSgQNRC1cj0FCang="
+  },
+  "responseFrame": {
+    "type": "data",
+    "n": 0,
+    "c": "w+dDrLZ4O86FFbXzvOA9smJnPC0rT9W9iXq9+9vt3iA3k+uN26VKR49cgFQOrrI4zmCg23uN1PKyBxqfh3EsdwTvgNjPkVp3Ilp1GoCfJhm8RzPRrPPHGFnTHcZL"
+  }
+}

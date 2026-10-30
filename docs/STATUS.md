@@ -1,10 +1,37 @@
 # Status
 
-Last updated: 2026-10-21.
+Last updated: 2026-10-30.
 
 This repository is the public, MIT-licensed extraction of Relay's router,
 daemon, menubar companion, release tooling, site, and push relay. The private
 repository retains the iOS client and full pre-split history.
+
+## M98 — encrypted cloud relay deployed (2026-10-30)
+
+The hosted Worker is live at
+`wss://relay-encrypted-tunnel.relay-tunnel.workers.dev`. The Mac companion
+connects outbound and defaults to that endpoint; setting `RELAY_TUNNEL_URL=`
+disables cloud access, or a custom WSS origin enables self-hosting. Update the
+iPhone companion and scan a new QR. Direct LAN/Tailscale stays preferred when
+reachable; the Mac can otherwise stay bound to loopback. Keep it awake/online.
+
+QR-authenticated ephemeral P-256 ECDH, HMAC/HKDF-SHA256 and ChaCha20-Poly1305
+protect API/event contents. Only routing metadata and ciphertext reach the
+Worker; bearer tokens and QR secrets remain between devices. Pending claims
+expire; tokens remain revocable. Request limits, replay/tamper rejection,
+reconnect and no automatic replay of uncertain writes are covered by tests.
+The protocol has not had an independent cryptographic audit.
+
+Validation: Worker build and 5 tests, 100% statements/branches/functions/lines;
+daemon Sorbet and 535 specs, 100% lines; 47 Mac tests and build. Real internet
+smokes verify Ruby peer pairing/API/events/reconnect/revocation without plaintext
+markers, and the native Swift CryptoKit client against the live Ruby OpenSSL
+bridge and running loopback-only Mac daemon. These are release smokes, separate
+from the offline unit suites. Physical phone/cellular acceptance is not inferred
+from these checks. See [the deployment runbook](../relay-tunnel/README.md).
+
+Next: update/re-pair the iPhone app, verify cellular operation on the physical
+phone, and retain the separate app-store/hardware acceptance workflow.
 
 ## Completed
 

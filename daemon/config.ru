@@ -13,6 +13,7 @@ require "relay_daemon/push_device_store"
 require "relay_daemon/push_notifier"
 require "relay_daemon/repo_store"
 require "relay_daemon/session_store"
+require "relay_daemon/tunnel_service"
 
 config = RelayDaemon::Config.from_env
 db     = RelayDaemon::Db.new(config.db_path)
@@ -40,5 +41,12 @@ push_notifier = RelayDaemon::PushNotifier.new(
 )
 RelayDaemon::App.set(:push_notifier, push_notifier)
 at_exit { push_notifier.shutdown }
+
+if config.tunnel_url
+  tunnel = RelayDaemon::TunnelService.new(endpoint: config.tunnel_url, path: config.tunnel_store_path,
+    pairing: RelayDaemon::App.settings.pairing_service, bus: RelayDaemon::App.settings.event_bus, app: RelayDaemon::App)
+  RelayDaemon::App.set(:tunnel_service, tunnel)
+  at_exit { tunnel.stop }
+end
 
 run RelayDaemon::App

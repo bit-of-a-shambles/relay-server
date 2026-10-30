@@ -27,6 +27,11 @@ if __FILE__ == $PROGRAM_NAME
     puts "Pair your device with:"
     puts "  URL:  #{payload.fetch("qrPayload").fetch("url")}"
     puts "  Code: #{payload.fetch("qrPayload").fetch("pairingCode")}"
+    if payload.fetch("qrPayload")["relay"]
+      require "base64"
+      query = URI.encode_www_form(url: payload["qrPayload"]["url"], code: payload["qrPayload"]["pairingCode"], relay: Base64.strict_encode64(JSON.generate(payload["qrPayload"]["relay"])))
+      puts "  Private cloud pairing link (claim within 5 minutes; do not share): relay://pair?#{query}"
+    end
     exit 0
   when "revoke"
     prefix = ARGV[1].to_s

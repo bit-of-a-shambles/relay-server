@@ -59,9 +59,14 @@ module RelayDaemon
     def token_valid?(token)
       return false if token.empty?
 
+      token_hash_valid?(hash_token(token))
+    end
+
+    sig { params(hash: String).returns(T::Boolean) }
+    def token_hash_valid?(hash)
       row = @db.connection.get_first_value(
         "SELECT id FROM auth_tokens WHERE token_hash = ? AND revoked_at IS NULL",
-        [hash_token(token)]
+        [hash]
       )
       !row.nil?
     end
