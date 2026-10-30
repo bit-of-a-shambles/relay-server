@@ -15,6 +15,7 @@ module RelayDaemon
     # `router/`. Installed (Homebrew) layouts override via RELAY_ROUTER_DIR.
     DEFAULT_ROUTER_DIR = T.let(File.expand_path("../../../router", __dir__), String)
     DEFAULT_ROUTER_COMMAND = T.let(["npm", "run", "start"], T::Array[String])
+    DEFAULT_TUNNEL_URL = T.let("wss://relay-encrypted-tunnel.relay-tunnel.workers.dev", String)
     PUSH_ENVIRONMENTS = T.let(["production", "sandbox"].freeze, T::Array[String])
 
     const :daemon_token, T.nilable(String)
@@ -30,6 +31,8 @@ module RelayDaemon
     const :routing_config_path, T.nilable(String), default: nil
     const :router_dir, String, default: DEFAULT_ROUTER_DIR
     const :router_command, T::Array[String], default: DEFAULT_ROUTER_COMMAND
+    const :tunnel_url, T.nilable(String), default: nil
+    const :tunnel_store_path, String, default: File.expand_path("~/.relay/cloud-pairings.json")
     const :push_relay_url, T.nilable(String), default: nil
     const :push_relay_token, T.nilable(String), default: nil
     const :push_environment, String, default: "production"
@@ -40,6 +43,7 @@ module RelayDaemon
       push_relay_token = ENV["RELAY_PUSH_RELAY_TOKEN"]
       push_environment = T.must(ENV.fetch("RELAY_PUSH_ENVIRONMENT", "production"))
       validate_push_config!(push_relay_url, push_relay_token, push_environment)
+      tunnel_url = T.must(ENV.fetch("RELAY_TUNNEL_URL", DEFAULT_TUNNEL_URL)).strip
 
       new(
         daemon_token: ENV["RELAY_DAEMON_TOKEN"],
@@ -55,6 +59,8 @@ module RelayDaemon
         routing_config_path: ENV["RELAY_ROUTING_CONFIG"],
         router_dir: T.must(ENV.fetch("RELAY_ROUTER_DIR", DEFAULT_ROUTER_DIR)),
         router_command: router_command_from_env(ENV["RELAY_ROUTER_COMMAND"]),
+        tunnel_url: tunnel_url.empty? ? nil : tunnel_url,
+        tunnel_store_path: T.must(ENV.fetch("RELAY_TUNNEL_STORE", File.expand_path("~/.relay/cloud-pairings.json"))),
         push_relay_url: push_relay_url,
         push_relay_token: push_relay_token,
         push_environment: push_environment

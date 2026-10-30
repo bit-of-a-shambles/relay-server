@@ -106,6 +106,23 @@ width with no horizontal overflow. Publication proceeds through the branch PR.
 
 ---
 
+## M98 — Encrypted cloud connectivity (user priority 2026-10-30)
+
+- [x] M98 complete
+
+The user explicitly requested implementation and deployment ahead of older
+acceptance work. Both peers connect outbound over WSS, with authenticated
+end-to-end encryption; direct LAN/Tailscale remains preferred when reachable.
+
+Done when the deployed relay supports QR pairing, authenticated API calls,
+streamed events, reconnect and revocation without requiring Tailscale, while
+forwarding no plaintext message, source code or device encryption key.
+
+Validate: Worker build/tests/100% coverage; daemon Sorbet/specs/100% line
+coverage; macOS generation/test/build; and a real encrypted production smoke.
+No tests may call the network; the live smoke is separate release validation.
+See `relay-tunnel/README.md` for deployment and protocol details.
+
 ## Track A — Daemon scaffold
 
 ### M1 — Daemon skeleton with health endpoint

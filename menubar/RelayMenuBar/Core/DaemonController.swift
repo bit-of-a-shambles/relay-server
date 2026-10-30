@@ -209,15 +209,23 @@ final class DaemonController {
     struct PairingPayload {
         let daemonURL: String
         let pairingCode: String
+        var relay: [String: String]? = nil
 
         func qrContent() -> String {
             let encodedURL = daemonURL.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? daemonURL
             let encodedCode = pairingCode.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? pairingCode
-            return "relay://pair?url=\(encodedURL)&code=\(encodedCode)"
+            let direct = "relay://pair?url=\(encodedURL)&code=\(encodedCode)"
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            guard let relay, let data = try? encoder.encode(relay) else { return direct }
+            var parts = URLComponents(string: direct)!
+            parts.queryItems = (parts.queryItems ?? []) + [URLQueryItem(name: "relay", value: data.base64EncodedString())]
+            return parts.url!.absoluteString
         }
 
         func manualEntryText() -> String {
-            "Mac URL: \(daemonURL)\nPairing code: \(pairingCode)"
+            let direct = "Mac URL: \(daemonURL)\nPairing code: \(pairingCode)"
+            return relay == nil ? direct : qrContent()
         }
     }
 
@@ -368,18 +376,22 @@ final class DaemonController {
 
     static func decodePairingPayload(from data: Data) throws -> PairingPayload {
         let decoded = try JSONDecoder().decode(PairStartResponse.self, from: data)
-        guard let parsedURL = URL(string: decoded.qrPayload.url),
+        let relay = decoded.qrPayload.relay
+        let cloudValid = relay?["url"].flatMap { URL(string: $0) }?.scheme == "wss"
+            && relay?["room"]?.count == 64 && relay?["phone"]?.count == 64
+            && relay?["secret"].flatMap { Data(base64Encoded: $0) }?.count == 32
+        guard relay == nil || cloudValid, let parsedURL = URL(string: decoded.qrPayload.url),
               let scheme = parsedURL.scheme?.lowercased(),
               scheme == "http" || scheme == "https",
               let host = parsedURL.host,
-              !isLoopback(host) else {
+              (!isLoopback(host) || cloudValid) else {
             throw NSError(
                 domain: "RelayMenuBar",
                 code: 2,
                 userInfo: [NSLocalizedDescriptionKey: "pair/start returned a loopback URL — restart the daemon with RELAY_DAEMON_HOST set to a Tailscale or LAN address"]
             )
         }
-        return PairingPayload(daemonURL: decoded.qrPayload.url, pairingCode: decoded.qrPayload.pairingCode)
+        return PairingPayload(daemonURL: decoded.qrPayload.url, pairingCode: decoded.qrPayload.pairingCode, relay: relay)
     }
 }
 
@@ -473,6 +485,7 @@ private struct PairStartResponse: Decodable {
     struct QrPayload: Decodable {
         let url: String
         let pairingCode: String
+        let relay: [String: String]?
     }
 
     let qrPayload: QrPayload

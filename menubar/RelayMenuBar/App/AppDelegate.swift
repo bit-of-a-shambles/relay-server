@@ -88,11 +88,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 await MainActor.run {
                     let alert = NSAlert()
                     alert.messageText = "Relay Pairing Code"
-                    alert.informativeText = "Scan the QR code or enter these details manually in the iPhone app."
+                    alert.informativeText = payload.relay == nil
+                        ? "Scan the QR code or enter these details manually in the iPhone app."
+                        : "Scan this private QR or copy its pairing link into Relay on your iPhone. Claim within 5 minutes. Do not share it."
                     alert.alertStyle = .informational
                     alert.accessoryView = makePairingAccessoryView(payload: payload)
                     alert.addButton(withTitle: "Done")
-                    alert.addButton(withTitle: "Copy Details")
+                    alert.addButton(withTitle: payload.relay == nil ? "Copy Details" : "Copy Pairing Link")
                     if alert.runModal() == .alertSecondButtonReturn {
                         copyManualPairingDetails(payload)
                     }
@@ -153,8 +155,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             imageView.imageScaling = .scaleProportionallyUpOrDown
             imageView.translatesAutoresizingMaskIntoConstraints = false
             NSLayoutConstraint.activate([
-                imageView.widthAnchor.constraint(equalToConstant: 180),
-                imageView.heightAnchor.constraint(equalToConstant: 180)
+                imageView.widthAnchor.constraint(equalToConstant: payload.relay == nil ? 180 : 360),
+                imageView.heightAnchor.constraint(equalToConstant: payload.relay == nil ? 180 : 360)
             ])
             stack.addArrangedSubview(imageView)
         } else {
@@ -175,12 +177,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         manualStack.alignment = .leading
         manualStack.spacing = 6
         manualStack.translatesAutoresizingMaskIntoConstraints = false
-        manualStack.addArrangedSubview(makeSelectableTextField(title: "Mac URL", value: payload.daemonURL))
-        manualStack.addArrangedSubview(makeSelectableTextField(title: "Pairing code", value: payload.pairingCode))
+        if payload.relay == nil {
+            manualStack.addArrangedSubview(makeSelectableTextField(title: "Mac URL", value: payload.daemonURL))
+            manualStack.addArrangedSubview(makeSelectableTextField(title: "Pairing code", value: payload.pairingCode))
+        } else {
+            manualStack.addArrangedSubview(makeSelectableTextField(title: "Private pairing link", value: payload.qrContent()))
+        }
         stack.addArrangedSubview(manualStack)
 
         // NSAlert requires the accessory view to have a concrete frame
-        stack.frame = NSRect(x: 0, y: 0, width: 300, height: 300)
+        stack.frame = NSRect(x: 0, y: 0, width: payload.relay == nil ? 300 : 400, height: payload.relay == nil ? 300 : 470)
 
         return stack
     }

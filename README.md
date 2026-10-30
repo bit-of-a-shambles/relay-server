@@ -21,6 +21,7 @@ daemon exposes a plain REST/WebSocket API — see `daemon/README.md`).
 router/     TypeScript, Anthropic Messages API compatible cost router
 daemon/     Ruby + Sorbet Mac-side service (SQLite, Git worktrees, pairing)
 menubar/    Swift macOS status-item wrapper (optional, for daemon lifecycle)
+relay-tunnel/ Cloudflare Worker for encrypted remote access
 ```
 
 ## Install from source
@@ -40,23 +41,23 @@ bundle install
 bundle exec bin/daemon
 ```
 
-The default loopback address is for local checks on the Mac. To connect an
-iPhone, install Tailscale on both devices and start the daemon on the Mac's
-Tailscale address instead:
-
-```bash
-RELAY_DAEMON_HOST="$(/Applications/Tailscale.app/Contents/MacOS/Tailscale ip -4 | head -n 1)" RELAY_DAEMON_PORT=17777 bundle exec bin/daemon
-```
+The current companion enables the end-to-end encrypted cloud relay by default.
+The Mac may stay bound to loopback: both devices connect outbound, with no VPN,
+public Mac port or shared network required. Use the updated iPhone app and scan
+a **new** Mac QR, or paste its full private pairing link into the manual field.
 
 In another terminal, from the same `daemon/` directory:
 
 ```bash
-RELAY_DAEMON_PORT=17777 bundle exec bin/daemon pair
+bundle exec bin/daemon pair
 ```
 
-Enter the printed URL and one-time code on the iPhone. Keep the Mac running
-and reachable. A private LAN address also works on the same network; see
-[daemon setup and configuration](daemon/README.md).
+Keep the Mac awake and online. Do not share the private QR or pairing link.
+Older pairings still work directly; re-pair to add cloud access. A reachable
+LAN/Tailscale route is preferred when configured. Set `RELAY_TUNNEL_URL=` to
+turn cloud off, or supply your own WSS endpoint to self-host.
+See [daemon configuration](daemon/README.md) and
+[the deployment/security runbook](relay-tunnel/README.md).
 
 ## Harnesses and model sources
 

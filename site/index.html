@@ -42,7 +42,7 @@
         <h2 id="how-title">A direct line to the work.</h2>
         <p class="section-intro">Relay keeps the Mac as the source of truth and gives you a focused remote control from your iPhone.</p>
         <div class="three-up">
-          <article class="feature"><p class="step">01 / PAIR</p><h3>Connect your devices</h3><p>Pair the iOS app with the Relay daemon running on your Mac over your local network or Tailscale.</p></article>
+          <article class="feature"><p class="step">01 / PAIR</p><h3>Connect your devices</h3><p>Scan a fresh Mac pairing QR. Both devices connect outbound through an encrypted relay, so cellular works without a VPN. A reachable direct connection is preferred.</p></article>
           <article class="feature"><p class="step">02 / WORK</p><h3>Choose a thread and harness</h3><p>Use an installed coding harness with local models, OpenRouter or Doubleword where compatible. Your Mac runs the tools and keeps provider credentials.</p></article>
           <article class="feature"><p class="step">03 / REVIEW</p><h3>Review from anywhere</h3><p>Read the response, inspect diffs, and check test output before you approve the work.</p></article>
         </div>
@@ -61,7 +61,7 @@
 
     <section class="band" id="get-relay" aria-labelledby="install-title">
       <div class="section-inner install">
-        <div><p class="section-kicker">Mac companion</p><h2 id="install-title">Install the daemon first.</h2><p class="section-intro">Relay routes requests from your Mac-side daemon. Source code, local credentials, and provider keys are not uploaded to Relay servers. Install the current server from source using Node.js, Ruby and Bundler. Follow the repository guide for setup, provider keys and Tailscale pairing.</p><pre class="code-block"><code>git clone https://github.com/bit-of-a-shambles/relay-server.git</code></pre><p><a class="button" href="https://github.com/bit-of-a-shambles/relay-server#install-from-source">Mac installation guide</a></p></div>
+        <div><p class="section-kicker">Mac companion</p><h2 id="install-title">Install the daemon first.</h2><p class="section-intro">Relay routes requests from your Mac-side daemon. Source code and messages stay encrypted between your devices during cloud transit; provider keys remain on your Mac. Install the current server from source using Node.js, Ruby and Bundler. Follow the repository guide for setup, provider keys and encrypted pairing.</p><pre class="code-block"><code>git clone https://github.com/bit-of-a-shambles/relay-server.git</code></pre><p><a class="button" href="https://github.com/bit-of-a-shambles/relay-server#install-from-source">Mac installation guide</a></p></div>
         <div class="badge-placeholder"><strong>Coming to the App Store</strong>The Mac server is available from source. The iPhone app is being prepared for review.</div>
       </div>
     </section>

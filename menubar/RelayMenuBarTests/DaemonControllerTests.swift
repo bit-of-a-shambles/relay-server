@@ -365,6 +365,21 @@ final class DaemonControllerTests: XCTestCase {
         }
     }
 
+    func testCloudPairingQRSupportsLoopbackAndIncludesPrivateBootstrap() throws {
+        let relay = ["url": "wss://relay.test", "room": String(repeating: "a", count: 64),
+                     "phone": String(repeating: "b", count: 64), "secret": Data(repeating: 1, count: 32).base64EncodedString()]
+        let data = try JSONSerialization.data(withJSONObject: ["qrPayload": ["url": "http://127.0.0.1:7777", "pairingCode": "one-time", "relay": relay]])
+        let payload = try DaemonController.decodePairingPayload(from: data)
+        let parts = try XCTUnwrap(URLComponents(string: payload.qrContent()))
+        let encoded = try XCTUnwrap(parts.queryItems?.first { $0.name == "relay" }?.value)
+        let decoded = try JSONDecoder().decode([String: String].self, from: XCTUnwrap(Data(base64Encoded: encoded)))
+        XCTAssertEqual(decoded, relay)
+        XCTAssertTrue(payload.manualEntryText().contains(payload.qrContent()))
+        var invalid = relay; invalid["url"] = "https://relay.test"
+        let bad = try JSONSerialization.data(withJSONObject: ["qrPayload": ["url": "http://127.0.0.1:7777", "pairingCode": "one-time", "relay": invalid]])
+        XCTAssertThrowsError(try DaemonController.decodePairingPayload(from: bad))
+    }
+
     func testDecodePairingPayloadAcceptsTailscaleURL() throws {
         let data = Data(#"{"qrPayload":{"url":"http://100.64.0.1:17777","pairingCode":"abcd1234"}}"#.utf8)
         let payload = try DaemonController.decodePairingPayload(from: data)
